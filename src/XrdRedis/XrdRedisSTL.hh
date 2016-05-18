@@ -41,6 +41,7 @@ public:
   std::string get(const std::string &key);
   bool exists(const std::string &key);
   int del(const std::string &key);
+  std::vector<std::string> keys(const std::string &pattern);
 
   int sadd(const std::string &key, const std::string &element);
   bool sismember(const std::string &key, const std::string &element);
@@ -49,9 +50,6 @@ public:
   int scard(const std::string &key);
 private:
   std::map<std::string, std::map<std::string, std::string> > store;
-
-
-  // std::map<std::string, std::string> store;
 };
 
 #endif

@@ -19,7 +19,8 @@ if( ENABLE_REDIS )
     MODULE
     XrdRedis/XrdRedisPlugin.cc
     XrdRedis/XrdRedisSTL.cc       XrdRedis/XrdRedisSTL.hh
-    XrdRedis/XrdRedisProtocol.cc  XrdRedis/XrdRedisProtocol.hh )
+    XrdRedis/XrdRedisProtocol.cc  XrdRedis/XrdRedisProtocol.hh
+    XrdRedis/XrdRedisUtil.cc      XrdRedis/XrdRedisUtil.hh)
 
   target_link_libraries(
     ${LIB_XRD_REDIS}

@@ -36,6 +36,7 @@ public:
   virtual std::string get(const std::string &key) = 0;
   virtual bool exists(const std::string &key) = 0;
   virtual int del(const std::string &key) = 0;
+  virtual std::vector<std::string> keys(const std::string &pattern) = 0;
 
   virtual void hset(const std::string &key, const std::string &field, const std::string &value) = 0;
   virtual std::string hget(const std::string &key, const std::string &field) = 0;

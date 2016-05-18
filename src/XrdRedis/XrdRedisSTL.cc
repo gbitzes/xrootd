@@ -20,6 +20,8 @@
 //------------------------------------------------------------------------------
 
 #include "XrdRedisSTL.hh"
+#include "XrdRedisUtil.hh"
+
 #include <iostream>
 #include <stdlib.h>
 #include <sstream>
@@ -144,4 +146,18 @@ int XrdRedisSTL::del(const std::string &key) {
 
 bool XrdRedisSTL::exists(const std::string &key) {
   return store.find(key) != store.end();
+}
+
+std::vector<std::string> XrdRedisSTL::keys(const std::string &pattern) {
+  std::vector<std::string> ret;
+
+  bool allkeys = (pattern[0] == '*' && pattern.length() == 1);
+  for(std::map<std::string, std::map<std::string, std::string> >::iterator it = store.begin(); it != store.end(); it++) {
+    const std::string &key = it->first;
+    if(allkeys || XrdRedis_stringmatchlen(pattern.c_str(), pattern.length(),
+                                          key.c_str(), key.length(), 0)) {
+      ret.push_back(key);
+    }
+  }
+  return ret;
 }

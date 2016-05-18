@@ -239,6 +239,12 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
     }
     return SendNumber(count);
   }
+  else if(strcasecmp("KEYS", command.c_str()) == 0) {
+    if(request.size() != 2) return SendErrArgs(command);
+
+    std::vector<std::string> ret = backend->keys(request[1]);
+    return SendArray(ret);
+  }
   else if(strcasecmp("HGET", command.c_str()) == 0) {
     if(request.size() != 3) return SendErrArgs(command);
 
@@ -284,7 +290,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       return SendErr("hash value is not an integer");
     }
 
-    return Send(SSTR(":" << ret << "\r\n"));
+    return SendNumber(ret);
   }
   else if(strcasecmp("HDEL", command.c_str()) == 0) {
     if(request.size() <= 2) return SendErrArgs(command);
