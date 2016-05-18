@@ -33,6 +33,9 @@ public:
   std::vector<std::string> hkeys(const std::string &key);
   std::vector<std::string> hgetall(const std::string &key);
   bool hincrby(const std::string &key, const std::string &field, long long incrby, long long &result);
+  int hdel(const std::string &key, const std::string &field);
+  int hlen(const std::string &key);
+  std::vector<std::string> hvals(const std::string &key);
 
   void set(const std::string &key, const std::string &value);
   std::string get(const std::string &key);

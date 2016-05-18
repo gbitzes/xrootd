@@ -72,6 +72,27 @@ bool XrdRedisSTL::hincrby(const std::string &key, const std::string &field, long
   return true;
 }
 
+int XrdRedisSTL::hdel(const std::string &key, const std::string &field) {
+  int count = 0;
+  if(store[key].find(field) != store[key].end()) {
+    store[key].erase(field);
+    count++;
+  }
+  return count;
+}
+
+int XrdRedisSTL::hlen(const std::string &key) {
+  return store[key].size();
+}
+
+std::vector<std::string> XrdRedisSTL::hvals(const std::string &key) {
+  std::vector<std::string> ret;
+  for(std::map<std::string, std::string>::iterator it = store[key].begin(); it != store[key].end(); it++) {
+    ret.push_back(it->second);
+  }
+  return ret;
+}
+
 int XrdRedisSTL::sadd(const std::string &key, const std::string &element) {
   int count = 0;
 

@@ -286,6 +286,24 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
 
     return Send(SSTR(":" << ret << "\r\n"));
   }
+  else if(strcasecmp("HDEL", command.c_str()) == 0) {
+    if(request.size() <= 2) return SendErrArgs(command);
+
+    int count = 0;
+    for(unsigned i = 2; i < request.size(); i++) {
+      count += backend->hdel(request[1], request[i]);
+    }
+    return SendNumber(count);
+  }
+  else if(strcasecmp("HLEN", command.c_str()) == 0) {
+    if(request.size() != 2) return SendErrArgs(command);
+    return SendNumber(backend->hlen(request[1]));
+  }
+  else if(strcasecmp("HVALS", command.c_str()) == 0) {
+    if(request.size() != 2) return SendErrArgs(command);
+    std::vector<std::string> arr = backend->hvals(request[1]);
+    return SendArray(arr);
+  }
   else if(strcasecmp("SADD", command.c_str()) == 0) {
     if(request.size() <= 2) return SendErrArgs(command);
 

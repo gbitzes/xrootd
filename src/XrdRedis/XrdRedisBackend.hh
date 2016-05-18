@@ -43,6 +43,9 @@ public:
   virtual std::vector<std::string> hkeys(const std::string &key) = 0;
   virtual std::vector<std::string> hgetall(const std::string &key) = 0;
   virtual bool hincrby(const std::string &key, const std::string &field, long long incrby, long long &result) = 0;
+  virtual int hdel(const std::string &key, const std::string &field) = 0;
+  virtual int hlen(const std::string &key) = 0;
+  virtual std::vector<std::string> hvals(const std::string &key) = 0;
 
   virtual int sadd(const std::string &key, const std::string &element) = 0;
   virtual bool sismember(const std::string &key, const std::string &element) = 0;
