@@ -39,6 +39,10 @@ if( BUILD_HTTP )
   include( XrdHttp )
 endif()
 
+if( ENABLE_REDIS )
+  include( XrdRedis )
+endif()
+
 if( BUILD_CEPH )
   include( XrdCeph )
 endif()
