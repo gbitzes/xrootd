@@ -246,9 +246,14 @@ int XrdRedisProtocol::ReadInteger(XrdLink *lp, char prefix) {
     return -1;
   }
 
-  myBuff->buff[buff_position] = '\0';
+  myBuff->buff[buff_position-2] = '\0';
 
-  int num = atoi(myBuff->buff+1);
+  char *endptr;
+  long num = strtol(myBuff->buff+1, &endptr, 10);
+  if(*endptr != '\0' || num == LONG_MIN || num == LONG_MAX) {
+    TRACEI(ALL, "Protocol error, received an invalid integer");
+    return -1;
+  }
 
   buff_position = 0;
 
