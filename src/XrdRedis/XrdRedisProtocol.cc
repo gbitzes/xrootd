@@ -23,6 +23,7 @@
 #include "XrdRedisProtocol.hh"
 #include "XrdRedisSTL.hh"
 #include <stdlib.h>
+#include <algorithm>
 
 
 /******************************************************************************/
@@ -39,6 +40,60 @@ XrdOucTrace *XrdRedisTrace = 0;
 XrdBuffManager *XrdRedisProtocol::BPool = 0; // Buffer manager
 XrdRedisBackend *XrdRedisProtocol::backend = 0;
 int XrdRedisProtocol::readWait = 0;
+
+enum CmdType {
+  CMD_GET,
+  CMD_SET,
+  CMD_EXISTS,
+  CMD_DEL,
+  CMD_KEYS,
+
+  CMD_HGET,
+  CMD_HSET,
+  CMD_HKEYS,
+  CMD_HGETALL,
+  CMD_HINCRBY,
+  CMD_HDEL,
+  CMD_HLEN,
+  CMD_HVALS,
+  CMD_HSCAN,
+
+  CMD_SADD,
+  CMD_SISMEMBER,
+  CMD_SREM,
+  CMD_SMEMBERS,
+  CMD_SCARD,
+  CMD_SSCAN
+};
+
+std::map<std::string, CmdType> cmdMap;
+
+struct cmdMapInit {
+  cmdMapInit() {
+    cmdMap["get"] = CMD_GET;
+    cmdMap["set"] = CMD_SET;
+    cmdMap["exists"] = CMD_EXISTS;
+    cmdMap["del"] = CMD_DEL;
+    cmdMap["keys"] = CMD_KEYS;
+
+    cmdMap["hget"] = CMD_HGET;
+    cmdMap["hset"] = CMD_HSET;
+    cmdMap["hkeys"] = CMD_HKEYS;
+    cmdMap["hgetall"] = CMD_HGETALL;
+    cmdMap["hincrby"] = CMD_HINCRBY;
+    cmdMap["hdel"] = CMD_HDEL;
+    cmdMap["hlen"] = CMD_HLEN;
+    cmdMap["hvals"] = CMD_HVALS;
+    cmdMap["hscan"] = CMD_HSCAN;
+
+    cmdMap["sadd"] = CMD_SADD;
+    cmdMap["sismember"] = CMD_SISMEMBER;
+    cmdMap["srem"] = CMD_SREM;
+    cmdMap["smembers"] = CMD_SMEMBERS;
+    cmdMap["scard"] = CMD_SCARD;
+    cmdMap["sscan"] = CMD_SSCAN;
+  }
+} cmdMapInit;
 
 /******************************************************************************/
 /*            P r o t o c o l   M a n a g e m e n t   S t a c k s             */
@@ -194,173 +249,185 @@ int XrdRedisProtocol::ReadInteger(XrdLink *lp, char prefix) {
   myBuff->buff[buff_position] = '\0';
 
   int num = atoi(myBuff->buff+1);
+
   buff_position = 0;
 
   return num;
 }
 
 int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
-  std::stringstream ss;
+  // to lower
+  std::transform(request[0].begin(), request[0].end(), request[0].begin(), ::tolower);
 
   std::string command = request[0];
   TRACEI(DEBUG, "in process request, command: '" << command << "'");
+  TRACEI(DEBUG, "cmdMap size: " << cmdMap.size());
+  std::map<std::string, CmdType>::iterator cmd = cmdMap.find(command);
 
-  if(strcasecmp("GET", command.c_str()) == 0) {
-    if(request.size() != 2) return SendErrArgs(command);
 
-    if(!backend->exists(request[1])) {
-      return SendNull();
+  if(cmd == cmdMap.end()) {
+    return SendErr(SSTR("unknown command '" << request[0] << "'"));
+  }
+
+  switch(cmd->second) {
+    case CMD_GET: {
+      if(request.size() != 2) return SendErrArgs(command);
+
+      if(!backend->exists(request[1])) {
+        return SendNull();
+      }
+
+      const std::string &value = backend->get(request[1]);
+      return SendString(value);
     }
+    case CMD_SET: {
+      if(request.size() != 3) return SendErrArgs(command);
 
-    const std::string &value = backend->get(request[1]);
-    return SendString(value);
-  }
-  else if(strcasecmp("SET", command.c_str()) == 0) {
-    if(request.size() != 3) return SendErrArgs(command);
-
-    backend->set(request[1], request[2]);
-    return Send("+OK\r\n");
-  }
-  else if(strcasecmp("EXISTS", command.c_str()) == 0) {
-    if(request.size() <= 1) return SendErrArgs(command);
-
-    int count = 0;
-    for(unsigned i = 1; i < request.size(); i++) {
-      if(backend->exists(request[i])) count++;
+      backend->set(request[1], request[2]);
+      return Send("+OK\r\n");
     }
-    return SendNumber(count);
-  }
-  else if(strcasecmp("DEL", command.c_str()) == 0) {
-    if(request.size() <= 1) return SendErrArgs(command);
+    case CMD_EXISTS: {
+      if(request.size() <= 1) return SendErrArgs(command);
 
-    int count = 0;
-    for(unsigned i = 1; i < request.size(); i++) {
-      count += backend->del(request[i]);
+      int count = 0;
+      for(unsigned i = 1; i < request.size(); i++) {
+        if(backend->exists(request[i])) count++;
+      }
+      return SendNumber(count);
     }
-    return SendNumber(count);
-  }
-  else if(strcasecmp("KEYS", command.c_str()) == 0) {
-    if(request.size() != 2) return SendErrArgs(command);
+    case CMD_DEL: {
+      if(request.size() <= 1) return SendErrArgs(command);
 
-    std::vector<std::string> ret = backend->keys(request[1]);
-    return SendArray(ret);
-  }
-  else if(strcasecmp("HGET", command.c_str()) == 0) {
-    if(request.size() != 3) return SendErrArgs(command);
-
-    if(!backend->hexists(request[1], request[2])) {
-      return SendNull();
+      int count = 0;
+      for(unsigned i = 1; i < request.size(); i++) {
+        count += backend->del(request[i]);
+      }
+      return SendNumber(count);
     }
+    case CMD_KEYS: {
+      if(request.size() != 2) return SendErrArgs(command);
 
-    const std::string &value = backend->hget(request[1], request[2]);
-    return SendString(value);
-  }
-  else if(strcasecmp("HSET", command.c_str()) == 0) {
-    if(request.size() != 4) return SendErrArgs(command);
-
-    bool existed = backend->hexists(request[1], request[2]);
-    backend->hset(request[1], request[2], request[3]);
-    if(existed) return SendNumber(0);
-    return SendNumber(1);
-  }
-  else if(strcasecmp("HKEYS", command.c_str()) == 0) {
-    if(request.size() != 2) return SendErrArgs(command);
-
-    std::vector<std::string> arr = backend->hkeys(request[1]);
-    return SendArray(arr);
-  }
-  else if(strcasecmp("HGETALL", command.c_str()) == 0) {
-    if(request.size() != 2) return SendErrArgs(command);
-
-    std::vector<std::string> arr = backend->hgetall(request[1]);
-    return SendArray(arr);
-  }
-  else if(strcasecmp("HINCRBY", command.c_str()) == 0) {
-    if(request.size() != 4) return SendErrArgs(command);
-
-    char *endptr;
-    long long incby = strtoll(request[3].c_str(), &endptr, 10);
-    // return Send(SSTR("-ERR I got " << incby << " and endptr is " << endptr << "\r\n"));
-    if(*endptr != '\0' || incby == LLONG_MIN || incby == LLONG_MAX) {
-      return SendErr("value is not an integer or out of range");
+      std::vector<std::string> ret = backend->keys(request[1]);
+      return SendArray(ret);
     }
+    case CMD_HGET: {
+      if(request.size() != 3) return SendErrArgs(command);
 
-    long long ret;
-    if(!backend->hincrby(request[1], request[2], incby, ret)) {
-      return SendErr("hash value is not an integer");
+      if(!backend->hexists(request[1], request[2])) {
+        return SendNull();
+      }
+
+      const std::string &value = backend->hget(request[1], request[2]);
+      return SendString(value);
     }
+    case CMD_HSET: {
+      if(request.size() != 4) return SendErrArgs(command);
 
-    return SendNumber(ret);
-  }
-  else if(strcasecmp("HDEL", command.c_str()) == 0) {
-    if(request.size() <= 2) return SendErrArgs(command);
-
-    int count = 0;
-    for(unsigned i = 2; i < request.size(); i++) {
-      count += backend->hdel(request[1], request[i]);
+      bool existed = backend->hexists(request[1], request[2]);
+      backend->hset(request[1], request[2], request[3]);
+      if(existed) return SendNumber(0);
+      return SendNumber(1);
     }
-    return SendNumber(count);
-  }
-  else if(strcasecmp("HLEN", command.c_str()) == 0) {
-    if(request.size() != 2) return SendErrArgs(command);
-    return SendNumber(backend->hlen(request[1]));
-  }
-  else if(strcasecmp("HVALS", command.c_str()) == 0) {
-    if(request.size() != 2) return SendErrArgs(command);
-    std::vector<std::string> arr = backend->hvals(request[1]);
-    return SendArray(arr);
-  }
-  else if(strcasecmp("HSCAN", command.c_str()) == 0) {
-    if(request.size() != 3) return SendErrArgs(command);
-    if(request[2] != "0") return SendErr("invalid cursor");
-    std::vector<std::string> arr = backend->hgetall(request[1]);
-    return SendScanResp("0", arr);
-  }
-  else if(strcasecmp("SADD", command.c_str()) == 0) {
-    if(request.size() <= 2) return SendErrArgs(command);
+    case CMD_HKEYS: {
+      if(request.size() != 2) return SendErrArgs(command);
 
-    int count = 0;
-    for(unsigned i = 2; i < request.size(); i++) {
-      count += backend->sadd(request[1], request[i]);
+      std::vector<std::string> arr = backend->hkeys(request[1]);
+      return SendArray(arr);
     }
-    return SendNumber(count);
-  }
-  else if(strcasecmp("SISMEMBER", command.c_str()) == 0) {
-    if(request.size() != 3) return SendErrArgs(command);
+    case CMD_HGETALL: {
+      if(request.size() != 2) return SendErrArgs(command);
 
-    int answer = 0;
-    if(backend->sismember(request[1], request[2])) {
-      answer = 1;
+      std::vector<std::string> arr = backend->hgetall(request[1]);
+      return SendArray(arr);
     }
+    case CMD_HINCRBY: {
+      if(request.size() != 4) return SendErrArgs(command);
 
-    return SendNumber(answer);
-  }
-  else if(strcasecmp("SREM", command.c_str()) == 0) {
-    if(request.size() <= 2) return SendErrArgs(command);
+      char *endptr;
+      long long incby = strtoll(request[3].c_str(), &endptr, 10);
+      // return Send(SSTR("-ERR I got " << incby << " and endptr is " << endptr << "\r\n"));
+      if(*endptr != '\0' || incby == LLONG_MIN || incby == LLONG_MAX) {
+        return SendErr("value is not an integer or out of range");
+      }
 
-    int count = 0;
-    for(unsigned i = 2; i < request.size(); i++) {
-      count += backend->srem(request[1], request[i]);
+      long long ret;
+      if(!backend->hincrby(request[1], request[2], incby, ret)) {
+        return SendErr("hash value is not an integer");
+      }
+
+      return SendNumber(ret);
     }
-    return SendNumber(count);
-  }
-  else if(strcasecmp("SMEMBERS", command.c_str()) == 0) {
-    if(request.size() != 2) return SendErrArgs(command);
-    const std::vector<std::string> arr = backend->smembers(request[1]);
-    return SendArray(arr);
-  }
-  else if(strcasecmp("SCARD", command.c_str()) == 0) {
-    if(request.size() != 2) return SendErrArgs(command);
-    return SendNumber(backend->scard(request[1]));
-  }
-  else if(strcasecmp("SSCAN", command.c_str()) == 0) {
-    if(request.size() != 3) return SendErrArgs(command);
-    if(request[2] != "0") return SendErr("invalid cursor");
-    std::vector<std::string> arr = backend->smembers(request[1]);
-    return SendScanResp("0", arr);
-  }
+    case CMD_HDEL: {
+      if(request.size() <= 2) return SendErrArgs(command);
 
-  return SendErr(SSTR("unknown command '" << command << "'"));
+      int count = 0;
+      for(unsigned i = 2; i < request.size(); i++) {
+        count += backend->hdel(request[1], request[i]);
+      }
+      return SendNumber(count);
+    }
+    case CMD_HLEN: {
+      if(request.size() != 2) return SendErrArgs(command);
+      return SendNumber(backend->hlen(request[1]));
+    }
+    case CMD_HVALS: {
+      if(request.size() != 2) return SendErrArgs(command);
+      std::vector<std::string> arr = backend->hvals(request[1]);
+      return SendArray(arr);
+    }
+    case CMD_HSCAN: {
+      if(request.size() != 3) return SendErrArgs(command);
+      if(request[2] != "0") return SendErr("invalid cursor");
+      std::vector<std::string> arr = backend->hgetall(request[1]);
+      return SendScanResp("0", arr);
+    }
+    case CMD_SADD: {
+      if(request.size() <= 2) return SendErrArgs(command);
+
+      int count = 0;
+      for(unsigned i = 2; i < request.size(); i++) {
+        count += backend->sadd(request[1], request[i]);
+      }
+      return SendNumber(count);
+    }
+    case CMD_SISMEMBER: {
+      if(request.size() != 3) return SendErrArgs(command);
+
+      int answer = 0;
+      if(backend->sismember(request[1], request[2])) {
+        answer = 1;
+      }
+
+      return SendNumber(answer);
+    }
+    case CMD_SREM: {
+      if(request.size() <= 2) return SendErrArgs(command);
+
+      int count = 0;
+      for(unsigned i = 2; i < request.size(); i++) {
+        count += backend->srem(request[1], request[i]);
+      }
+      return SendNumber(count);
+    }
+    case CMD_SMEMBERS: {
+      if(request.size() != 2) return SendErrArgs(command);
+      const std::vector<std::string> arr = backend->smembers(request[1]);
+      return SendArray(arr);
+    }
+    case CMD_SCARD: {
+      if(request.size() != 2) return SendErrArgs(command);
+      return SendNumber(backend->scard(request[1]));
+    }
+    case CMD_SSCAN: {
+      if(request.size() != 3) return SendErrArgs(command);
+      if(request[2] != "0") return SendErr("invalid cursor");
+      std::vector<std::string> arr = backend->smembers(request[1]);
+      return SendScanResp("0", arr);
+    }
+    default: {
+      return SendErr("an unknown error occurred when dispatching the command");
+    }
+  }
 }
 
 int XrdRedisProtocol::SendNumber(int number) {
@@ -453,7 +520,6 @@ int XrdRedisProtocol::Configure(char *parms, XrdProtocol_Config * pi) {
   readWait = 100;
 
   backend = new XrdRedisSTL();
-
   return 1;
 }
 
