@@ -310,6 +310,12 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
     std::vector<std::string> arr = backend->hvals(request[1]);
     return SendArray(arr);
   }
+  else if(strcasecmp("HSCAN", command.c_str()) == 0) {
+    if(request.size() != 3) return SendErrArgs(command);
+    if(request[2] != "0") return SendErr("invalid cursor");
+    std::vector<std::string> arr = backend->hgetall(request[1]);
+    return SendScanResp("0", arr);
+  }
   else if(strcasecmp("SADD", command.c_str()) == 0) {
     if(request.size() <= 2) return SendErrArgs(command);
 
@@ -347,12 +353,32 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
     if(request.size() != 2) return SendErrArgs(command);
     return SendNumber(backend->scard(request[1]));
   }
+  else if(strcasecmp("SSCAN", command.c_str()) == 0) {
+    if(request.size() != 3) return SendErrArgs(command);
+    if(request[2] != "0") return SendErr("invalid cursor");
+    std::vector<std::string> arr = backend->smembers(request[1]);
+    return SendScanResp("0", arr);
+  }
 
   return SendErr(SSTR("unknown command '" << command << "'"));
 }
 
 int XrdRedisProtocol::SendNumber(int number) {
   return Send(SSTR(":" << number << "\r\n"));
+}
+
+int XrdRedisProtocol::SendScanResp(const std::string &marker, const std::vector<std::string> &arr) {
+  std::stringstream ss;
+  ss << "*2\r\n";
+  ss << "$" << marker.length() << "\r\n";
+  ss << marker << "\r\n";
+
+  ss << "*" << arr.size() << "\r\n";
+  for(std::vector<std::string>::const_iterator it = arr.begin(); it != arr.end(); it++) {
+    ss << "$" << it->length() << "\r\n";
+    ss << *it << "\r\n";
+  }
+  return Send(ss);
 }
 
 int XrdRedisProtocol::SendArray(const std::vector<std::string> &arr) {
