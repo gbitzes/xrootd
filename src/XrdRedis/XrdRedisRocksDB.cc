@@ -19,7 +19,7 @@
 // along with XRootD.  If not, see <http://www.gnu.org/licenses/>.
 //------------------------------------------------------------------------------
 
-#include "XrdRedisSTL.hh"
+#include "XrdRedisRocksDB.hh"
 #include "XrdRedisUtil.hh"
 
 #include <iostream>
@@ -27,19 +27,30 @@
 #include <sstream>
 #include <climits>
 
+static XrdRedisStatus status_convert(const rocksdb::Status &st) {
+  return XrdRedisStatus(st.code(), st.ToString());
+}
+
 static XrdRedisStatus OK() {
   return XrdRedisStatus();
 }
 
-std::string XrdRedisSTL::hget(const std::string &key, const std::string &field) {
+XrdRedisRocksDB::XrdRedisRocksDB(const std::string &filename) {
+  rocksdb::Options options;
+  options.create_if_missing = true;
+  rocksdb::Status status = rocksdb::DB::Open(options, filename, &db);
+  assert(status.ok());
+}
+
+std::string XrdRedisRocksDB::hget(const std::string &key, const std::string &field) {
   return store[key][field];
 }
 
-bool XrdRedisSTL::hexists(const std::string &key, const std::string &field) {
+bool XrdRedisRocksDB::hexists(const std::string &key, const std::string &field) {
   return store[key].find(field) != store[key].end();
 }
 
-std::vector<std::string> XrdRedisSTL::hkeys(const std::string &key) {
+std::vector<std::string> XrdRedisRocksDB::hkeys(const std::string &key) {
   std::vector<std::string> ret;
   for(std::map<std::string, std::string>::iterator it = store[key].begin(); it != store[key].end(); it++) {
     ret.push_back(it->first);
@@ -47,7 +58,7 @@ std::vector<std::string> XrdRedisSTL::hkeys(const std::string &key) {
   return ret;
 }
 
-std::vector<std::string> XrdRedisSTL::hgetall(const std::string &key) {
+std::vector<std::string> XrdRedisRocksDB::hgetall(const std::string &key) {
   std::vector<std::string> ret;
   for(std::map<std::string, std::string>::iterator it = store[key].begin(); it != store[key].end(); it++) {
     ret.push_back(it->first);
@@ -56,11 +67,11 @@ std::vector<std::string> XrdRedisSTL::hgetall(const std::string &key) {
   return ret;
 }
 
-void XrdRedisSTL::hset(const std::string &key, const std::string &field, const std::string &value) {
+void XrdRedisRocksDB::hset(const std::string &key, const std::string &field, const std::string &value) {
   store[key][field] = value;
 }
 
-bool XrdRedisSTL::hincrby(const std::string &key, const std::string &field, long long incrby, long long &result) {
+bool XrdRedisRocksDB::hincrby(const std::string &key, const std::string &field, long long incrby, long long &result) {
   long long num = 0;
   if(this->hexists(key, field)) {
     const std::string &value = this->hget(key, field);
@@ -78,7 +89,7 @@ bool XrdRedisSTL::hincrby(const std::string &key, const std::string &field, long
   return true;
 }
 
-int XrdRedisSTL::hdel(const std::string &key, const std::string &field) {
+int XrdRedisRocksDB::hdel(const std::string &key, const std::string &field) {
   int count = 0;
   if(store[key].find(field) != store[key].end()) {
     store[key].erase(field);
@@ -87,11 +98,11 @@ int XrdRedisSTL::hdel(const std::string &key, const std::string &field) {
   return count;
 }
 
-int XrdRedisSTL::hlen(const std::string &key) {
+int XrdRedisRocksDB::hlen(const std::string &key) {
   return store[key].size();
 }
 
-std::vector<std::string> XrdRedisSTL::hvals(const std::string &key) {
+std::vector<std::string> XrdRedisRocksDB::hvals(const std::string &key) {
   std::vector<std::string> ret;
   for(std::map<std::string, std::string>::iterator it = store[key].begin(); it != store[key].end(); it++) {
     ret.push_back(it->second);
@@ -99,7 +110,7 @@ std::vector<std::string> XrdRedisSTL::hvals(const std::string &key) {
   return ret;
 }
 
-int XrdRedisSTL::sadd(const std::string &key, const std::string &element) {
+int XrdRedisRocksDB::sadd(const std::string &key, const std::string &element) {
   int count = 0;
 
   if(store[key].find(element) == store[key].end()) {
@@ -110,11 +121,11 @@ int XrdRedisSTL::sadd(const std::string &key, const std::string &element) {
   return count;
 }
 
-bool XrdRedisSTL::sismember(const std::string &key, const std::string &element) {
+bool XrdRedisRocksDB::sismember(const std::string &key, const std::string &element) {
   return store[key].find(element) != store[key].end();
 }
 
-int XrdRedisSTL::srem(const std::string &key, const std::string &element) {
+int XrdRedisRocksDB::srem(const std::string &key, const std::string &element) {
   int count = 0;
 
   if(store[key].find(element) != store[key].end()) {
@@ -124,38 +135,38 @@ int XrdRedisSTL::srem(const std::string &key, const std::string &element) {
   return count;
 }
 
-std::vector<std::string> XrdRedisSTL::smembers(const std::string &key) {
+std::vector<std::string> XrdRedisRocksDB::smembers(const std::string &key) {
   return hkeys(key);
 }
 
-int XrdRedisSTL::scard(const std::string &key) {
+int XrdRedisRocksDB::scard(const std::string &key) {
   return store[key].size();
 }
 
-XrdRedisStatus XrdRedisSTL::set(const std::string& key, const std::string& value) {
-  hset(key, "\0", value);
+XrdRedisStatus XrdRedisRocksDB::set(const std::string& key, const std::string& value) {
+  rocksdb::Status st = db->Put(rocksdb::WriteOptions(), key, value);
+  if(!st.ok()) return status_convert(st);
   return OK();
 }
 
-XrdRedisStatus XrdRedisSTL::get(const std::string &key, std::string &value) {
-  value = hget(key, "\0");
+XrdRedisStatus XrdRedisRocksDB::get(const std::string &key, std::string &value) {
+  rocksdb::Status st = db->Get(rocksdb::ReadOptions(), key, &value);
+  if(!st.ok()) return status_convert(st);
   return OK();
 }
 
-XrdRedisStatus XrdRedisSTL::del(const std::string &key) {
-  if(store.find(key) != store.end()) {
-    store.erase(key);
-    return OK();
-  }
-  return XrdRedisStatus(rocksdb::Status::kNotFound, "");
+XrdRedisStatus XrdRedisRocksDB::del(const std::string &key) {
+  XrdRedisStatus st = this->exists(key);
+  if(!st.ok()) return st;
+  return status_convert(db->Delete(rocksdb::WriteOptions(), key));
 }
 
-XrdRedisStatus XrdRedisSTL::exists(const std::string &key) {
-  if(store.find(key) != store.end()) return OK();
-  return XrdRedisStatus(rocksdb::Status::kNotFound, "");
+XrdRedisStatus XrdRedisRocksDB::exists(const std::string &key) {
+  std::string value;
+  return status_convert(db->Get(rocksdb::ReadOptions(), key, &value));
 }
 
-std::vector<std::string> XrdRedisSTL::keys(const std::string &pattern) {
+std::vector<std::string> XrdRedisRocksDB::keys(const std::string &pattern) {
   std::vector<std::string> ret;
 
   bool allkeys = (pattern[0] == '*' && pattern.length() == 1);

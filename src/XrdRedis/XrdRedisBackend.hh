@@ -24,18 +24,49 @@
 
 #include <string>
 #include <vector>
+#include <rocksdb/status.h>
+#include <iostream>
 
 /******************************************************************************/
 /*                               D e f i n e s                                */
 /******************************************************************************/
 
+class XrdRedisStatus {
+public:
+  XrdRedisStatus(int code, const std::string &err) : code_(code), error_(err) {
+  }
+
+  XrdRedisStatus() {}
+
+  std::string ToString() const {
+    return error_;
+  }
+
+  int code() const {
+    return code_;
+  }
+
+  bool ok() const {
+    return code_ == rocksdb::Status::kOk;
+    // return error_.empty();
+  }
+
+  bool IsNotFound() const {
+    return code_ == rocksdb::Status::kNotFound;
+  }
+
+private:
+  int code_;
+  std::string error_;
+};
+
 // interface for a redis backend
 class XrdRedisBackend {
 public:
-  virtual void set(const std::string &key, const std::string &value) = 0;
-  virtual std::string get(const std::string &key) = 0;
-  virtual bool exists(const std::string &key) = 0;
-  virtual int del(const std::string &key) = 0;
+  virtual XrdRedisStatus set(const std::string &key, const std::string &value) = 0;
+  virtual XrdRedisStatus get(const std::string &key, std::string &value) = 0;
+  virtual XrdRedisStatus exists(const std::string &key) = 0;
+  virtual XrdRedisStatus del(const std::string &key) = 0;
   virtual std::vector<std::string> keys(const std::string &pattern) = 0;
 
   virtual void hset(const std::string &key, const std::string &field, const std::string &value) = 0;

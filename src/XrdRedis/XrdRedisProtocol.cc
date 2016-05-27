@@ -22,6 +22,7 @@
 #include "XrdVersion.hh"
 #include "XrdRedisProtocol.hh"
 #include "XrdRedisSTL.hh"
+#include "XrdRedisRocksDB.hh"
 #include <stdlib.h>
 #include <algorithm>
 
@@ -274,21 +275,23 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
     return SendErr(SSTR("unknown command '" << request[0] << "'"));
   }
 
+  XrdRedisStatus st;
+
   switch(cmd->second) {
     case CMD_GET: {
       if(request.size() != 2) return SendErrArgs(command);
 
-      if(!backend->exists(request[1])) {
-        return SendNull();
-      }
-
-      const std::string &value = backend->get(request[1]);
+      std::string value;
+      st = backend->get(request[1], value);
+      if(st.IsNotFound()) return SendNull();
+      if(!st.ok()) return SendErr(st);
       return SendString(value);
     }
     case CMD_SET: {
       if(request.size() != 3) return SendErrArgs(command);
 
-      backend->set(request[1], request[2]);
+      st = backend->set(request[1], request[2]);
+      if(!st.ok()) return SendErr(st);
       return Send("+OK\r\n");
     }
     case CMD_EXISTS: {
@@ -296,7 +299,10 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
 
       int count = 0;
       for(unsigned i = 1; i < request.size(); i++) {
-        if(backend->exists(request[i])) count++;
+        st = backend->exists(request[i]);
+        if(st.ok()) count++;
+        else if(!st.IsNotFound()) SendErr(st);
+
       }
       return SendNumber(count);
     }
@@ -305,7 +311,9 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
 
       int count = 0;
       for(unsigned i = 1; i < request.size(); i++) {
-        count += backend->del(request[i]);
+        st = backend->del(request[i]);
+        if(st.ok()) count++;
+        else if(!st.IsNotFound()) SendErr(st);
       }
       return SendNumber(count);
     }
@@ -484,7 +492,9 @@ int XrdRedisProtocol::SendErr(const std::string &msg) {
   return Send(SSTR("-ERR " << msg << "\r\n"));
 }
 
-
+int XrdRedisProtocol::SendErr(const XrdRedisStatus &st) {
+  return Send(SSTR("-ERR " << st.ToString() << "\r\n"));
+}
 
 int XrdRedisProtocol::SendNull() {
   return Send("$-1\r\n");
@@ -524,7 +534,7 @@ int XrdRedisProtocol::Configure(char *parms, XrdProtocol_Config * pi) {
   // readWait = 30000;
   readWait = 100;
 
-  backend = new XrdRedisSTL();
+  backend = new XrdRedisRocksDB("/home/gbitzes/redisdb");
   return 1;
 }
 

@@ -113,6 +113,7 @@ private:
   int SendNull();
   int SendString(const std::string &str);
   int SendErr(const std::string &msg);
+  int SendErr(const XrdRedisStatus &st);
   int SendScanResp(const std::string &marker, const std::vector<std::string> &err);
 
 protected:

@@ -19,14 +19,17 @@
 // along with XRootD.  If not, see <http://www.gnu.org/licenses/>.
 //------------------------------------------------------------------------------
 
-#ifndef __XRDREDIS_STL_H__
-#define __XRDREDIS_STL_H__
+#ifndef __XRDREDIS_ROCKSDB_H__
+#define __XRDREDIS_ROCKSDB_H__
 
 #include "XrdRedisBackend.hh"
 #include <map>
+#include <rocksdb/db.h>
 
-class XrdRedisSTL : public XrdRedisBackend {
+class XrdRedisRocksDB : public XrdRedisBackend {
 public:
+  XrdRedisRocksDB(const std::string &filename);
+
   void hset(const std::string &key, const std::string &field, const std::string &value);
   std::string hget(const std::string &key, const std::string &field);
   bool hexists(const std::string &key, const std::string &field);
@@ -49,6 +52,7 @@ public:
   std::vector<std::string> smembers(const std::string &key);
   int scard(const std::string &key);
 private:
+  rocksdb::DB* db;
   std::map<std::string, std::map<std::string, std::string> > store;
 };
 
