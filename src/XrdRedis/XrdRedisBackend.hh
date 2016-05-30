@@ -36,6 +36,7 @@ public:
   XrdRedisStatus(int code, const std::string &err) : code_(code), error_(err) {
   }
 
+  XrdRedisStatus(int code) : code_(code) {}
   XrdRedisStatus() {}
 
   std::string ToString() const {
@@ -69,10 +70,10 @@ public:
   virtual XrdRedisStatus del(const std::string &key) = 0;
   virtual std::vector<std::string> keys(const std::string &pattern) = 0;
 
-  virtual void hset(const std::string &key, const std::string &field, const std::string &value) = 0;
-  virtual std::string hget(const std::string &key, const std::string &field) = 0;
-  virtual bool hexists(const std::string &key, const std::string &field) = 0;
-  virtual std::vector<std::string> hkeys(const std::string &key) = 0;
+  virtual XrdRedisStatus hset(const std::string &key, const std::string &field, const std::string &value) = 0;
+  virtual XrdRedisStatus hget(const std::string &key, const std::string &field, std::string &value) = 0;
+  virtual XrdRedisStatus hexists(const std::string &key, const std::string &field) = 0;
+  virtual XrdRedisStatus hkeys(const std::string &key, std::vector<std::string> &keys) = 0;
   virtual std::vector<std::string> hgetall(const std::string &key) = 0;
   virtual bool hincrby(const std::string &key, const std::string &field, long long incrby, long long &result) = 0;
   virtual int hdel(const std::string &key, const std::string &field) = 0;
@@ -85,6 +86,7 @@ public:
   virtual std::vector<std::string> smembers(const std::string &key) = 0;
   virtual int scard(const std::string &key) = 0;
 
+  virtual ~XrdRedisBackend() {}
 };
 
 

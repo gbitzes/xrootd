@@ -29,11 +29,12 @@
 class XrdRedisRocksDB : public XrdRedisBackend {
 public:
   XrdRedisRocksDB(const std::string &filename);
+  ~XrdRedisRocksDB();
 
-  void hset(const std::string &key, const std::string &field, const std::string &value);
-  std::string hget(const std::string &key, const std::string &field);
-  bool hexists(const std::string &key, const std::string &field);
-  std::vector<std::string> hkeys(const std::string &key);
+  XrdRedisStatus hset(const std::string &key, const std::string &field, const std::string &value);
+  XrdRedisStatus hget(const std::string &key, const std::string &field, std::string &value);
+  XrdRedisStatus hexists(const std::string &key, const std::string &field);
+  XrdRedisStatus hkeys(const std::string &key, std::vector<std::string> &keys);
   std::vector<std::string> hgetall(const std::string &key);
   bool hincrby(const std::string &key, const std::string &field, long long incrby, long long &result);
   int hdel(const std::string &key, const std::string &field);

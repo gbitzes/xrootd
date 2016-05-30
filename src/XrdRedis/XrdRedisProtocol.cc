@@ -51,6 +51,7 @@ enum CmdType {
 
   CMD_HGET,
   CMD_HSET,
+  CMD_HEXISTS,
   CMD_HKEYS,
   CMD_HGETALL,
   CMD_HINCRBY,
@@ -79,6 +80,7 @@ struct cmdMapInit {
 
     cmdMap["hget"] = CMD_HGET;
     cmdMap["hset"] = CMD_HSET;
+    cmdMap["hexists"] = CMD_HEXISTS;
     cmdMap["hkeys"] = CMD_HKEYS;
     cmdMap["hgetall"] = CMD_HGETALL;
     cmdMap["hincrby"] = CMD_HINCRBY;
@@ -313,7 +315,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       for(unsigned i = 1; i < request.size(); i++) {
         st = backend->del(request[i]);
         if(st.ok()) count++;
-        else if(!st.IsNotFound()) SendErr(st);
+        else if(!st.IsNotFound()) return SendErr(st);
       }
       return SendNumber(count);
     }
@@ -326,26 +328,39 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
     case CMD_HGET: {
       if(request.size() != 3) return SendErrArgs(command);
 
-      if(!backend->hexists(request[1], request[2])) {
-        return SendNull();
-      }
+      std::string value;
+      st = backend->hget(request[1], request[2], value);
+      if(st.IsNotFound()) SendNull();
+      else if(!st.ok()) return SendErr(st);
 
-      const std::string &value = backend->hget(request[1], request[2]);
       return SendString(value);
     }
     case CMD_HSET: {
       if(request.size() != 4) return SendErrArgs(command);
 
-      bool existed = backend->hexists(request[1], request[2]);
-      backend->hset(request[1], request[2], request[3]);
-      if(existed) return SendNumber(0);
+      // Mild race condition here.. if the key doesn't exist, but another thread modifies
+      // it in the meantime the user gets a response of 1, not 0
+
+      XrdRedisStatus existed = backend->hexists(request[1], request[2]);
+      if(!existed.ok() && !existed.IsNotFound()) return SendErr(st);
+
+      XrdRedisStatus st = backend->hset(request[1], request[2], request[3]);
+      if(!st.ok()) return SendErr(st);
+
+      if(existed.ok()) return SendNumber(0);
       return SendNumber(1);
+    }
+    case CMD_HEXISTS: {
+      return SendErr("not implemented");
     }
     case CMD_HKEYS: {
       if(request.size() != 2) return SendErrArgs(command);
 
-      std::vector<std::string> arr = backend->hkeys(request[1]);
-      return SendArray(arr);
+      std::vector<std::string> keys;
+      XrdRedisStatus st = backend->hkeys(request[1], keys);
+      if(!st.ok()) return SendErr(st);
+
+      return SendArray(keys);
     }
     case CMD_HGETALL: {
       if(request.size() != 2) return SendErrArgs(command);

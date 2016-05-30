@@ -28,23 +28,24 @@
 #include <climits>
 
 static XrdRedisStatus OK() {
-  return XrdRedisStatus();
+  return XrdRedisStatus(rocksdb::Status::kOk);
 }
 
-std::string XrdRedisSTL::hget(const std::string &key, const std::string &field) {
-  return store[key][field];
+XrdRedisStatus XrdRedisSTL::hget(const std::string &key, const std::string &field, std::string &value) {
+  value = store[key][field];
+  return OK();
 }
 
-bool XrdRedisSTL::hexists(const std::string &key, const std::string &field) {
-  return store[key].find(field) != store[key].end();
+XrdRedisStatus XrdRedisSTL::hexists(const std::string &key, const std::string &field) {
+  if(store[key].find(field) != store[key].end()) return OK();
+  return XrdRedisStatus(rocksdb::Status::kNotFound, "");
 }
 
-std::vector<std::string> XrdRedisSTL::hkeys(const std::string &key) {
-  std::vector<std::string> ret;
+XrdRedisStatus XrdRedisSTL::hkeys(const std::string &key, std::vector<std::string> &keys) {
   for(std::map<std::string, std::string>::iterator it = store[key].begin(); it != store[key].end(); it++) {
-    ret.push_back(it->first);
+    keys.push_back(it->first);
   }
-  return ret;
+  return OK();
 }
 
 std::vector<std::string> XrdRedisSTL::hgetall(const std::string &key) {
@@ -56,14 +57,18 @@ std::vector<std::string> XrdRedisSTL::hgetall(const std::string &key) {
   return ret;
 }
 
-void XrdRedisSTL::hset(const std::string &key, const std::string &field, const std::string &value) {
+XrdRedisStatus XrdRedisSTL::hset(const std::string &key, const std::string &field, const std::string &value) {
   store[key][field] = value;
+  return OK();
 }
 
 bool XrdRedisSTL::hincrby(const std::string &key, const std::string &field, long long incrby, long long &result) {
   long long num = 0;
-  if(this->hexists(key, field)) {
-    const std::string &value = this->hget(key, field);
+
+  XrdRedisStatus st = this->hexists(key, field);
+  if(st.ok()) {
+    std::string value;
+    this->hget(key, field, value);
     char *endptr = NULL;
     num = strtoll(value.c_str(), &endptr, 10);
     if(*endptr != '\0' || num == LLONG_MIN || num == LONG_LONG_MAX) {
@@ -125,7 +130,9 @@ int XrdRedisSTL::srem(const std::string &key, const std::string &element) {
 }
 
 std::vector<std::string> XrdRedisSTL::smembers(const std::string &key) {
-  return hkeys(key);
+  std::vector<std::string> ret;
+  hkeys(key, ret);
+  return ret;
 }
 
 int XrdRedisSTL::scard(const std::string &key) {
@@ -138,7 +145,7 @@ XrdRedisStatus XrdRedisSTL::set(const std::string& key, const std::string& value
 }
 
 XrdRedisStatus XrdRedisSTL::get(const std::string &key, std::string &value) {
-  value = hget(key, "\0");
+  this->hget(key, "\0", value);
   return OK();
 }
 
