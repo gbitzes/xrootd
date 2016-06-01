@@ -48,13 +48,12 @@ XrdRedisStatus XrdRedisSTL::hkeys(const std::string &key, std::vector<std::strin
   return OK();
 }
 
-std::vector<std::string> XrdRedisSTL::hgetall(const std::string &key) {
-  std::vector<std::string> ret;
+XrdRedisStatus XrdRedisSTL::hgetall(const std::string &key, std::vector<std::string> &res) {
   for(std::map<std::string, std::string>::iterator it = store[key].begin(); it != store[key].end(); it++) {
-    ret.push_back(it->first);
-    ret.push_back(it->second);
+    res.push_back(it->first);
+    res.push_back(it->second);
   }
-  return ret;
+  return OK();
 }
 
 XrdRedisStatus XrdRedisSTL::hset(const std::string &key, const std::string &field, const std::string &value) {
@@ -83,25 +82,24 @@ bool XrdRedisSTL::hincrby(const std::string &key, const std::string &field, long
   return true;
 }
 
-int XrdRedisSTL::hdel(const std::string &key, const std::string &field) {
-  int count = 0;
+XrdRedisStatus XrdRedisSTL::hdel(const std::string &key, const std::string &field) {
   if(store[key].find(field) != store[key].end()) {
     store[key].erase(field);
-    count++;
+    return OK();
   }
-  return count;
+  return XrdRedisStatus(rocksdb::Status::kNotFound, "");
 }
 
-int XrdRedisSTL::hlen(const std::string &key) {
-  return store[key].size();
+XrdRedisStatus XrdRedisSTL::hlen(const std::string &key, size_t &len) {
+  len = store[key].size();
+  return OK();
 }
 
-std::vector<std::string> XrdRedisSTL::hvals(const std::string &key) {
-  std::vector<std::string> ret;
+XrdRedisStatus XrdRedisSTL::hvals(const std::string &key, std::vector<std::string> &vals) {
   for(std::map<std::string, std::string>::iterator it = store[key].begin(); it != store[key].end(); it++) {
-    ret.push_back(it->second);
+    vals.push_back(it->second);
   }
-  return ret;
+  return OK();
 }
 
 int XrdRedisSTL::sadd(const std::string &key, const std::string &element) {

@@ -74,11 +74,11 @@ public:
   virtual XrdRedisStatus hget(const std::string &key, const std::string &field, std::string &value) = 0;
   virtual XrdRedisStatus hexists(const std::string &key, const std::string &field) = 0;
   virtual XrdRedisStatus hkeys(const std::string &key, std::vector<std::string> &keys) = 0;
-  virtual std::vector<std::string> hgetall(const std::string &key) = 0;
+  virtual XrdRedisStatus hgetall(const std::string &key, std::vector<std::string> &res) = 0;
   virtual bool hincrby(const std::string &key, const std::string &field, long long incrby, long long &result) = 0;
-  virtual int hdel(const std::string &key, const std::string &field) = 0;
-  virtual int hlen(const std::string &key) = 0;
-  virtual std::vector<std::string> hvals(const std::string &key) = 0;
+  virtual XrdRedisStatus hdel(const std::string &key, const std::string &field) = 0;
+  virtual XrdRedisStatus hlen(const std::string &key, size_t &len) = 0;
+  virtual XrdRedisStatus hvals(const std::string &key, std::vector<std::string> &vals) = 0;
 
   virtual int sadd(const std::string &key, const std::string &element) = 0;
   virtual bool sismember(const std::string &key, const std::string &element) = 0;

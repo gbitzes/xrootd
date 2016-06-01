@@ -35,11 +35,11 @@ public:
   XrdRedisStatus hget(const std::string &key, const std::string &field, std::string &value);
   XrdRedisStatus hexists(const std::string &key, const std::string &field);
   XrdRedisStatus hkeys(const std::string &key, std::vector<std::string> &keys);
-  std::vector<std::string> hgetall(const std::string &key);
+  XrdRedisStatus hgetall(const std::string &key, std::vector<std::string> &res);
   bool hincrby(const std::string &key, const std::string &field, long long incrby, long long &result);
-  int hdel(const std::string &key, const std::string &field);
-  int hlen(const std::string &key);
-  std::vector<std::string> hvals(const std::string &key);
+  XrdRedisStatus hdel(const std::string &key, const std::string &field);
+  XrdRedisStatus hlen(const std::string &key, size_t &len);
+  XrdRedisStatus hvals(const std::string &key, std::vector<std::string> &vals);
 
   XrdRedisStatus set(const std::string &key, const std::string &value);
   XrdRedisStatus get(const std::string &key, std::string &value);

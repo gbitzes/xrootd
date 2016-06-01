@@ -365,7 +365,10 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
     case CMD_HGETALL: {
       if(request.size() != 2) return SendErrArgs(command);
 
-      std::vector<std::string> arr = backend->hgetall(request[1]);
+      std::vector<std::string> arr;
+      XrdRedisStatus st = backend->hgetall(request[1], arr);
+      if(!st.ok()) return SendErr(st);
+
       return SendArray(arr);
     }
     case CMD_HINCRBY: {
@@ -390,23 +393,34 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
 
       int count = 0;
       for(unsigned i = 2; i < request.size(); i++) {
-        count += backend->hdel(request[1], request[i]);
+        XrdRedisStatus st = backend->hdel(request[1], request[i]);
+        if(st.ok()) count++;
+        else if(!st.IsNotFound()) return SendErr(st);
       }
       return SendNumber(count);
     }
     case CMD_HLEN: {
       if(request.size() != 2) return SendErrArgs(command);
-      return SendNumber(backend->hlen(request[1]));
+      size_t len;
+      XrdRedisStatus st = backend->hlen(request[1], len);
+      if(!st.ok()) return SendErr(st);
+
+      return SendNumber(len);
     }
     case CMD_HVALS: {
       if(request.size() != 2) return SendErrArgs(command);
-      std::vector<std::string> arr = backend->hvals(request[1]);
-      return SendArray(arr);
+      std::vector<std::string> vals;
+      XrdRedisStatus st = backend->hvals(request[1], vals);
+      return SendArray(vals);
     }
     case CMD_HSCAN: {
       if(request.size() != 3) return SendErrArgs(command);
       if(request[2] != "0") return SendErr("invalid cursor");
-      std::vector<std::string> arr = backend->hgetall(request[1]);
+
+      std::vector<std::string> arr;
+      XrdRedisStatus st = backend->hgetall(request[1], arr);
+      if(!st.ok()) return SendErr(st);
+      
       return SendScanResp("0", arr);
     }
     case CMD_SADD: {

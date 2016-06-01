@@ -58,9 +58,6 @@ static std::string translate_key(const RedisType type, const std::string &key) {
   std::string escaped = key;
   escape(escaped, '#');
 
-  std::cout << "original key: " << key << std::endl;
-  std::cout << "escaped: " << escaped << std::endl;
-
   return std::string(1, type) + escaped;
 }
 
@@ -85,8 +82,6 @@ XrdRedisRocksDB::~XrdRedisRocksDB() {
 
 XrdRedisStatus XrdRedisRocksDB::hget(const std::string &key, const std::string &field, std::string &value) {
   std::string tkey = translate_key(kHash, key, field);
-  std::cout << "tkey: " << tkey << std::endl;
-
   return status_convert(db->Get(rocksdb::ReadOptions(), tkey, &value));
 }
 
@@ -107,13 +102,15 @@ XrdRedisStatus XrdRedisRocksDB::hkeys(const std::string &key, std::vector<std::s
   return OK();
 }
 
-std::vector<std::string> XrdRedisRocksDB::hgetall(const std::string &key) {
-  std::vector<std::string> ret;
-  for(std::map<std::string, std::string>::iterator it = store[key].begin(); it != store[key].end(); it++) {
-    ret.push_back(it->first);
-    ret.push_back(it->second);
+XrdRedisStatus XrdRedisRocksDB::hgetall(const std::string &key, std::vector<std::string> &res) {
+  std::string tkey = translate_key(kHash, key) + "#";
+  auto iter = db->NewIterator(rocksdb::ReadOptions());
+  for(iter->Seek(tkey); iter->Valid(); iter->Next()) {
+    if(strncmp(iter->key().data(), tkey.c_str(), tkey.size()) != 0) break;
+    res.push_back(iter->key().data() + tkey.size());
+    res.push_back(iter->value().ToString());
   }
-  return ret;
+  return OK();
 }
 
 XrdRedisStatus XrdRedisRocksDB::hset(const std::string &key, const std::string &field, const std::string &value) {
@@ -142,25 +139,38 @@ bool XrdRedisRocksDB::hincrby(const std::string &key, const std::string &field, 
   return true;
 }
 
-int XrdRedisRocksDB::hdel(const std::string &key, const std::string &field) {
-  int count = 0;
-  if(store[key].find(field) != store[key].end()) {
-    store[key].erase(field);
-    count++;
-  }
-  return count;
+XrdRedisStatus XrdRedisRocksDB::hdel(const std::string &key, const std::string &field) {
+  std::string tkey = translate_key(kHash, key, field);
+
+  // race condition
+  std::string value;
+  rocksdb::Status st = db->Get(rocksdb::ReadOptions(), tkey, &value);
+  if(!st.ok()) return status_convert(st);
+
+  return status_convert(db->Delete(rocksdb::WriteOptions(), tkey));
 }
 
-int XrdRedisRocksDB::hlen(const std::string &key) {
-  return store[key].size();
+XrdRedisStatus XrdRedisRocksDB::hlen(const std::string &key, size_t &len) {
+  len = 0;
+
+  std::string tkey = translate_key(kHash, key) + "#";
+  auto iter = db->NewIterator(rocksdb::ReadOptions());
+  for(iter->Seek(tkey); iter->Valid(); iter->Next()) {
+    if(strncmp(iter->key().data(), tkey.c_str(), tkey.size()) != 0) break;
+    len++;
+  }
+
+  return OK();
 }
 
-std::vector<std::string> XrdRedisRocksDB::hvals(const std::string &key) {
-  std::vector<std::string> ret;
-  for(std::map<std::string, std::string>::iterator it = store[key].begin(); it != store[key].end(); it++) {
-    ret.push_back(it->second);
+XrdRedisStatus XrdRedisRocksDB::hvals(const std::string &key, std::vector<std::string> &vals) {
+  std::string tkey = translate_key(kHash, key) + "#";
+  auto iter = db->NewIterator(rocksdb::ReadOptions());
+  for(iter->Seek(tkey); iter->Valid(); iter->Next()) {
+    if(strncmp(iter->key().data(), tkey.c_str(), tkey.size()) != 0) break;
+    vals.push_back(iter->value().ToString());
   }
-  return ret;
+  return OK();
 }
 
 int XrdRedisRocksDB::sadd(const std::string &key, const std::string &element) {
