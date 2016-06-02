@@ -183,7 +183,7 @@ int XrdRedisProtocol::ReadRequest(XrdLink *lp) {
   for( ; current_element < request_size; current_element++) {
     int rc = ReadElement(lp);
     if(rc <= 0) return rc;
-    request.push_back(myBuff->buff);
+    request.push_back(std::string(myBuff->buff, rc));
     element_size = 0;
     buff_position = 0;
   }
@@ -215,7 +215,6 @@ int XrdRedisProtocol::ReadString(XrdLink *lp, int nbytes) {
     return -1;
   }
 
-  myBuff->buff[buff_position-2] = '\0';
   TRACEI(DEBUG, "Got string: " << myBuff->buff);
   return nbytes;
 }
