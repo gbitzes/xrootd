@@ -27,6 +27,10 @@
 #include <sstream>
 #include <climits>
 
+#include <rocksdb/merge_operator.h>
+
+using namespace rocksdb;
+
 static XrdRedisStatus status_convert(const rocksdb::Status &st) {
   return XrdRedisStatus(st.code(), st.ToString());
 }
@@ -41,22 +45,50 @@ enum RedisType {
   kSet
 };
 
-static void escape(std::string &str, char target) {
+// it's rare to have to escape a key, most don't contain #
+// so don't make a copy and change the existing string
+static void escape(std::string &str) {
   char replacement[3];
-  replacement[0] = '\\';
-  replacement[1] = target;
+  replacement[0] = '|';
+  replacement[1] = '#';
   replacement[2] = '\0';
 
   size_t pos = 0;
-  while((pos = str.find(target, pos)) != std::string::npos) {
+  while((pos = str.find('#', pos)) != std::string::npos) {
     str.replace(pos, 1, replacement);
     pos += 2;
   }
 }
 
+// unescape key
+
+// given a rocksdb key (might also contain a field),
+// extract the original redis key
+static std::string extract_key(std::string &tkey) {
+  std::string key;
+  key.reserve(tkey.size());
+
+  for(size_t i = 1; i < tkey.size(); i++) {
+    // escaped hash?
+    if(i != tkey.size() - 1 && tkey[i] == '|' && tkey[i+1] == '#') {
+      key.append(1, '#');
+      i++;
+      continue;
+    }
+    // boundary?
+    if(tkey[i] == '#') {
+      break;
+    }
+
+    key.append(1, tkey[i]);
+  }
+
+  return key;
+}
+
 static std::string translate_key(const RedisType type, const std::string &key) {
   std::string escaped = key;
-  escape(escaped, '#');
+  escape(escaped);
 
   return std::string(1, type) + escaped;
 }
@@ -67,9 +99,61 @@ static std::string translate_key(const RedisType type, const std::string &key, c
   return translated;
 }
 
+bool my_strtoll(const char* str, int64_t &ret) {
+  char *endptr = NULL;
+  ret = strtoll(str, &endptr, 10);
+  if(*endptr != '\0' || ret == LLONG_MIN || ret == LONG_LONG_MAX) {
+    return false;
+  }
+  return true;
+}
+
+// merge operator for additions to provide atomic incrby
+class Int64AddOperator : public AssociativeMergeOperator {
+public:
+  virtual bool Merge(const Slice& key, const Slice* existing_value, const Slice& value,
+                     std::string* new_value, Logger* logger) const override {
+    // there's no decent way to do error reporting to the client
+    // inside a rocksdb Merge operator, partially also because
+    // the method is applied asynchronously and might not be run
+    // until the next Get on this key!!
+    //
+    // ignore all errors and return true, without modifying the value.
+    // returning false here corrupts the key entirely!
+    // all sanity checking should be done in the client code calling merge
+
+    // assuming 0 if no existing value
+    int64_t existing = 0;
+    if(existing_value) {
+      if(!my_strtoll(existing_value->ToString().c_str(), existing)) {
+        *new_value = existing_value->ToString();
+        return true;
+      }
+    }
+
+    int64_t oper;
+    if(!my_strtoll(value.ToString().c_str(), oper)) {
+      // this should not happen under any circumstances..
+      *new_value = existing_value->ToString();
+      return true;
+    }
+
+    int64_t newval = existing + oper;
+    std::stringstream ss;
+    ss << newval;
+    *new_value = ss.str();
+    return true;
+  }
+
+  virtual const char* Name() const override {
+    return "Int64AddOperator";
+  }
+};
+
 XrdRedisRocksDB::XrdRedisRocksDB(const std::string &filename) {
   std::cout << "constructing redis rocksdb backend" << std::endl;
   rocksdb::Options options;
+  options.merge_operator.reset(new Int64AddOperator);
   options.create_if_missing = true;
   rocksdb::Status status = rocksdb::DB::Open(options, filename, &db);
   assert(status.ok());
@@ -97,7 +181,8 @@ XrdRedisStatus XrdRedisRocksDB::hkeys(const std::string &key, std::vector<std::s
   auto iter = db->NewIterator(rocksdb::ReadOptions());
   for(iter->Seek(tkey); iter->Valid(); iter->Next()) {
     if(strncmp(iter->key().data(), tkey.c_str(), tkey.size()) != 0) break;
-    keys.push_back(iter->key().data() + tkey.size());
+    std::string tmp = iter->key().ToString();
+    keys.push_back(&tmp[0] + tkey.size());
   }
   return OK();
 }
@@ -107,7 +192,8 @@ XrdRedisStatus XrdRedisRocksDB::hgetall(const std::string &key, std::vector<std:
   auto iter = db->NewIterator(rocksdb::ReadOptions());
   for(iter->Seek(tkey); iter->Valid(); iter->Next()) {
     if(strncmp(iter->key().data(), tkey.c_str(), tkey.size()) != 0) break;
-    res.push_back(iter->key().data() + tkey.size());
+    std::string tmp = iter->key().ToString();
+    res.push_back(&tmp[0] + tkey.size());
     res.push_back(iter->value().ToString());
   }
   return OK();
@@ -119,24 +205,45 @@ XrdRedisStatus XrdRedisRocksDB::hset(const std::string &key, const std::string &
   return status_convert(st);
 }
 
-bool XrdRedisRocksDB::hincrby(const std::string &key, const std::string &field, long long incrby, long long &result) {
-  long long num = 0;
-  XrdRedisStatus st = this->hexists(key, field);
-  if(st.ok()) {
-    std::string value;
-    this->hget(key, field, value);
-    char *endptr = NULL;
-    num = strtoll(value.c_str(), &endptr, 10);
-    if(*endptr != '\0' || num == LLONG_MIN || num == LONG_LONG_MAX) {
-      return false;
-    }
+XrdRedisStatus XrdRedisRocksDB::hincrby(const std::string &key, const std::string &field, const std::string &incrby, int64_t &result) {
+  std::string tkey = translate_key(kHash, key, field);
+
+  int64_t tmp;
+  if(!my_strtoll(incrby.c_str(), tmp)) {
+    return XrdRedisStatus(rocksdb::Status::kNotSupported, "value is not an integer or out of range");
   }
 
-  result = num + incrby;
-  std::stringstream ss;
-  ss << result;
-  this->hset(key, field, ss.str());
-  return true;
+  rocksdb::Status st = db->Merge(WriteOptions(), tkey, incrby);
+  if(!st.ok()) return status_convert(st);
+
+  std::string value;
+  st = db->Get(rocksdb::ReadOptions(), tkey, &value);
+
+  if(!my_strtoll(value.c_str(), result)) {
+    // This can occur under two circumstances: The value in tkey was not an
+    // integer in the first place, and the Merge operation had no effects on it.
+
+    // It could also happen if the Merge operation was successful, but then
+    // afterwards another request came up and set tkey to a non-integer.
+    // Even in this case the redis semantics are not violated - we just pretend
+    // this request was processed after the other thread modified the key to a
+    // non-integer.
+
+    return XrdRedisStatus(rocksdb::Status::kNotSupported, "hash value is not an integer");
+  }
+
+  // RACE CONDITION: An OK() can be erroneous in the following scenario:
+  // original value was "aaa"
+  // HINCRBY called to increase by 1
+  // Merge operation failed and did not modify the value at all
+  // Another thread came by and set the value to "5"
+  // Now, this thread sees an integer and thinks its merge operation was successful,
+  // happily reporting "5" to the user.
+  //
+  // Unfortunately, the semantics of rocksdb makes this very difficult to avoid
+  // without an extra layer of synchronization on top of it..
+
+  return OK();
 }
 
 XrdRedisStatus XrdRedisRocksDB::hdel(const std::string &key, const std::string &field) {
@@ -173,38 +280,60 @@ XrdRedisStatus XrdRedisRocksDB::hvals(const std::string &key, std::vector<std::s
   return OK();
 }
 
-int XrdRedisRocksDB::sadd(const std::string &key, const std::string &element) {
-  int count = 0;
+XrdRedisStatus XrdRedisRocksDB::sadd(const std::string &key, const std::string &element, int &added) {
+  std::string tkey = translate_key(kSet, key, element);
 
-  if(store[key].find(element) == store[key].end()) {
-    count++;
-    store[key][element] = 1;
+  std::string tmp;
+  rocksdb::Status st = db->Get(ReadOptions(), tkey, &tmp);
+  if(st.IsNotFound()) {
+    added++;
+    return status_convert(db->Put(WriteOptions(), tkey, "1"));
   }
 
-  return count;
+  return status_convert(st);
 }
 
-bool XrdRedisRocksDB::sismember(const std::string &key, const std::string &element) {
-  return store[key].find(element) != store[key].end();
+XrdRedisStatus XrdRedisRocksDB::sismember(const std::string &key, const std::string &element) {
+  std::string tkey = translate_key(kSet, key, element);
+
+  std::string tmp;
+  return status_convert(db->Get(ReadOptions(), tkey, &tmp));
 }
 
-int XrdRedisRocksDB::srem(const std::string &key, const std::string &element) {
-  int count = 0;
+XrdRedisStatus XrdRedisRocksDB::srem(const std::string &key, const std::string &element) {
+  std::string tkey = translate_key(kSet, key, element);
 
-  if(store[key].find(element) != store[key].end()) {
-    store[key].erase(element);
+  // race condition
+  std::string value;
+  rocksdb::Status st = db->Get(rocksdb::ReadOptions(), tkey, &value);
+  if(!st.ok()) return status_convert(st);
+
+  return status_convert(db->Delete(rocksdb::WriteOptions(), tkey));
+}
+
+XrdRedisStatus XrdRedisRocksDB::smembers(const std::string &key, std::vector<std::string> &members) {
+  std::string tkey = translate_key(kSet, key) + "#";
+
+  auto iter = db->NewIterator(rocksdb::ReadOptions());
+  for(iter->Seek(tkey); iter->Valid(); iter->Next()) {
+    if(strncmp(iter->key().data(), tkey.c_str(), tkey.size()) != 0) break;
+
+    std::string tmp = iter->key().ToString();
+    members.push_back(&tmp[0] + tkey.size());
+  }
+  return OK();
+}
+
+XrdRedisStatus XrdRedisRocksDB::scard(const std::string &key, size_t &count) {
+  std::string tkey = translate_key(kSet, key) + "#";
+  count = 0;
+
+  auto iter = db->NewIterator(rocksdb::ReadOptions());
+  for(iter->Seek(tkey); iter->Valid(); iter->Next()) {
+    if(strncmp(iter->key().data(), tkey.c_str(), tkey.size()) != 0) break;
     count++;
   }
-  return count;
-}
-
-std::vector<std::string> XrdRedisRocksDB::smembers(const std::string &key) {
-  return std::vector<std::string>();
-  // return hkeys(key);
-}
-
-int XrdRedisRocksDB::scard(const std::string &key) {
-  return store[key].size();
+  return OK();
 }
 
 XrdRedisStatus XrdRedisRocksDB::set(const std::string& key, const std::string& value) {
@@ -223,27 +352,91 @@ XrdRedisStatus XrdRedisRocksDB::get(const std::string &key, std::string &value) 
   return OK();
 }
 
+
+// if 0 keys are found matching prefix, it'll return kOk, not kNotFound!!
+XrdRedisStatus XrdRedisRocksDB::remove_all_with_prefix(const std::string &prefix) {
+  std::string tmp;
+
+  auto iter = db->NewIterator(rocksdb::ReadOptions());
+  for(iter->Seek(prefix); iter->Valid(); iter->Next()) {
+    std::string key = iter->key().ToString();
+    if(strncmp(key.c_str(), prefix.c_str(), prefix.size()) != 0) break;
+    rocksdb::Status st = db->Delete(WriteOptions(), key);
+    if(!st.ok()) return status_convert(st);
+  }
+  return OK();
+}
+
 XrdRedisStatus XrdRedisRocksDB::del(const std::string &key) {
-  XrdRedisStatus st = this->exists(key);
-  if(!st.ok()) return st;
-  return status_convert(db->Delete(rocksdb::WriteOptions(), key));
+  std::string tmp;
+
+  // is it a string?
+  std::string str_key = translate_key(kString, key);
+  XrdRedisStatus st = status_convert(db->Get(rocksdb::ReadOptions(), str_key, &tmp));
+  if(st.ok()) return remove_all_with_prefix(str_key);
+
+  // is it a hash?
+  std::string hash_key = translate_key(kHash, key) + "#";
+  auto iter = db->NewIterator(rocksdb::ReadOptions());
+  iter->Seek(hash_key);
+  if(iter->Valid() && strncmp(iter->key().ToString().c_str(), hash_key.c_str(), hash_key.size()) == 0) {
+    return remove_all_with_prefix(hash_key);
+  }
+
+  // is it a set?
+  std::string set_key = translate_key(kSet, key) + "#";
+  iter = db->NewIterator(rocksdb::ReadOptions());
+  iter->Seek(set_key);
+  if(iter->Valid() && strncmp(iter->key().ToString().c_str(), set_key.c_str(), set_key.size()) == 0) {
+    return remove_all_with_prefix(set_key);
+  }
+
+  return XrdRedisStatus(rocksdb::Status::kNotFound, "");
 }
 
 XrdRedisStatus XrdRedisRocksDB::exists(const std::string &key) {
-  std::string value;
-  return status_convert(db->Get(rocksdb::ReadOptions(), key, &value));
+  std::string tmp;
+
+  // is it a string?
+  std::string str_key = translate_key(kString, key);
+  XrdRedisStatus st = status_convert(db->Get(rocksdb::ReadOptions(), str_key, &tmp));
+  if(st.ok() || !st.IsNotFound()) return st;
+
+  // is it a hash?
+  std::string hash_key = translate_key(kHash, key) + "#";
+  auto iter = db->NewIterator(rocksdb::ReadOptions());
+  iter->Seek(hash_key);
+  if(iter->Valid() && strncmp(iter->key().ToString().c_str(), hash_key.c_str(), hash_key.size()) == 0) {
+    return OK();
+  }
+
+  // is it a set?
+  std::string set_key = translate_key(kSet, key) + "#";
+  iter = db->NewIterator(rocksdb::ReadOptions());
+  iter->Seek(set_key);
+  if(iter->Valid() && strncmp(iter->key().ToString().c_str(), set_key.c_str(), set_key.size()) == 0) {
+    return OK();
+  }
+
+  return XrdRedisStatus(rocksdb::Status::kNotFound, "");
 }
 
-std::vector<std::string> XrdRedisRocksDB::keys(const std::string &pattern) {
-  std::vector<std::string> ret;
+XrdRedisStatus XrdRedisRocksDB::keys(const std::string &pattern, std::vector<std::string> &result) {
+  bool allkeys = (pattern.length() == 1 && pattern[0] == '*');
+  auto iter = db->NewIterator(rocksdb::ReadOptions());
+  std::string previous;
+  for(iter->SeekToFirst(); iter->Valid(); iter->Next()) {
+    std::string tmp = iter->key().ToString();
+    std::string redis_key = extract_key(tmp);
 
-  bool allkeys = (pattern[0] == '*' && pattern.length() == 1);
-  for(std::map<std::string, std::map<std::string, std::string> >::iterator it = store.begin(); it != store.end(); it++) {
-    const std::string &key = it->first;
-    if(allkeys || XrdRedis_stringmatchlen(pattern.c_str(), pattern.length(),
-                                          key.c_str(), key.length(), 0)) {
-      ret.push_back(key);
+    if(redis_key != previous) {
+      if(allkeys || XrdRedis_stringmatchlen(pattern.c_str(), pattern.length(),
+                                            redis_key.c_str(), redis_key.length(), 0)) {
+        result.push_back(redis_key);
+      }
     }
+    previous = redis_key;
   }
-  return ret;
+
+  return OK();
 }

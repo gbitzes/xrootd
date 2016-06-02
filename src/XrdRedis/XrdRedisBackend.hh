@@ -68,23 +68,23 @@ public:
   virtual XrdRedisStatus get(const std::string &key, std::string &value) = 0;
   virtual XrdRedisStatus exists(const std::string &key) = 0;
   virtual XrdRedisStatus del(const std::string &key) = 0;
-  virtual std::vector<std::string> keys(const std::string &pattern) = 0;
+  virtual XrdRedisStatus keys(const std::string &pattern, std::vector<std::string> &result) = 0;
 
   virtual XrdRedisStatus hset(const std::string &key, const std::string &field, const std::string &value) = 0;
   virtual XrdRedisStatus hget(const std::string &key, const std::string &field, std::string &value) = 0;
   virtual XrdRedisStatus hexists(const std::string &key, const std::string &field) = 0;
   virtual XrdRedisStatus hkeys(const std::string &key, std::vector<std::string> &keys) = 0;
   virtual XrdRedisStatus hgetall(const std::string &key, std::vector<std::string> &res) = 0;
-  virtual bool hincrby(const std::string &key, const std::string &field, long long incrby, long long &result) = 0;
+  virtual XrdRedisStatus hincrby(const std::string &key, const std::string &field, const std::string &incrby, int64_t &result) = 0;
   virtual XrdRedisStatus hdel(const std::string &key, const std::string &field) = 0;
   virtual XrdRedisStatus hlen(const std::string &key, size_t &len) = 0;
   virtual XrdRedisStatus hvals(const std::string &key, std::vector<std::string> &vals) = 0;
 
-  virtual int sadd(const std::string &key, const std::string &element) = 0;
-  virtual bool sismember(const std::string &key, const std::string &element) = 0;
-  virtual int srem(const std::string &key, const std::string &element) = 0;
-  virtual std::vector<std::string> smembers(const std::string &key) = 0;
-  virtual int scard(const std::string &key) = 0;
+  virtual XrdRedisStatus sadd(const std::string &key, const std::string &element, int &added) = 0;
+  virtual XrdRedisStatus sismember(const std::string &key, const std::string &element) = 0;
+  virtual XrdRedisStatus srem(const std::string &key, const std::string &element) = 0;
+  virtual XrdRedisStatus smembers(const std::string &key, std::vector<std::string> &members) = 0;
+  virtual XrdRedisStatus scard(const std::string &key, size_t &count) = 0;
 
   virtual ~XrdRedisBackend() {}
 };

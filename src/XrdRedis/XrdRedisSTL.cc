@@ -61,25 +61,26 @@ XrdRedisStatus XrdRedisSTL::hset(const std::string &key, const std::string &fiel
   return OK();
 }
 
-bool XrdRedisSTL::hincrby(const std::string &key, const std::string &field, long long incrby, long long &result) {
-  long long num = 0;
-
-  XrdRedisStatus st = this->hexists(key, field);
-  if(st.ok()) {
-    std::string value;
-    this->hget(key, field, value);
-    char *endptr = NULL;
-    num = strtoll(value.c_str(), &endptr, 10);
-    if(*endptr != '\0' || num == LLONG_MIN || num == LONG_LONG_MAX) {
-      return false;
-    }
-  }
-
-  result = num + incrby;
-  std::stringstream ss;
-  ss << result;
-  this->hset(key, field, ss.str());
-  return true;
+XrdRedisStatus XrdRedisSTL::hincrby(const std::string &key, const std::string &field, const std::string &incrby, int64_t &result) {
+  return OK();
+  // long long num = 0;
+  //
+  // XrdRedisStatus st = this->hexists(key, field);
+  // if(st.ok()) {
+  //   std::string value;
+  //   this->hget(key, field, value);
+  //   char *endptr = NULL;
+  //   num = strtoll(value.c_str(), &endptr, 10);
+  //   if(*endptr != '\0' || num == LLONG_MIN || num == LONG_LONG_MAX) {
+  //     return false;
+  //   }
+  // }
+  //
+  // result = num + incrby;
+  // std::stringstream ss;
+  // ss << result;
+  // this->hset(key, field, ss.str());
+  // return true;
 }
 
 XrdRedisStatus XrdRedisSTL::hdel(const std::string &key, const std::string &field) {
@@ -102,39 +103,37 @@ XrdRedisStatus XrdRedisSTL::hvals(const std::string &key, std::vector<std::strin
   return OK();
 }
 
-int XrdRedisSTL::sadd(const std::string &key, const std::string &element) {
-  int count = 0;
-
+XrdRedisStatus XrdRedisSTL::sadd(const std::string &key, const std::string &element, int &added) {
   if(store[key].find(element) == store[key].end()) {
-    count++;
+    added++;
     store[key][element] = 1;
   }
 
-  return count;
+  return OK();
 }
 
-bool XrdRedisSTL::sismember(const std::string &key, const std::string &element) {
-  return store[key].find(element) != store[key].end();
+XrdRedisStatus XrdRedisSTL::sismember(const std::string &key, const std::string &element) {
+  bool exists = store[key].find(element) != store[key].end();
+  if(exists) return OK();
+  return XrdRedisStatus(rocksdb::Status::kNotFound, "");
 }
 
-int XrdRedisSTL::srem(const std::string &key, const std::string &element) {
-  int count = 0;
-
+XrdRedisStatus XrdRedisSTL::srem(const std::string &key, const std::string &element) {
   if(store[key].find(element) != store[key].end()) {
     store[key].erase(element);
-    count++;
+    return OK();
   }
-  return count;
+  return XrdRedisStatus(rocksdb::Status::kNotFound, "");
 }
 
-std::vector<std::string> XrdRedisSTL::smembers(const std::string &key) {
-  std::vector<std::string> ret;
-  hkeys(key, ret);
-  return ret;
+XrdRedisStatus XrdRedisSTL::smembers(const std::string &key, std::vector<std::string> &members) {
+  hkeys(key, members);
+  return OK();
 }
 
-int XrdRedisSTL::scard(const std::string &key) {
-  return store[key].size();
+XrdRedisStatus XrdRedisSTL::scard(const std::string &key, size_t &count) {
+  count = store[key].size();
+  return OK();
 }
 
 XrdRedisStatus XrdRedisSTL::set(const std::string& key, const std::string& value) {
@@ -160,16 +159,14 @@ XrdRedisStatus XrdRedisSTL::exists(const std::string &key) {
   return XrdRedisStatus(rocksdb::Status::kNotFound, "");
 }
 
-std::vector<std::string> XrdRedisSTL::keys(const std::string &pattern) {
-  std::vector<std::string> ret;
-
+XrdRedisStatus XrdRedisSTL::keys(const std::string &pattern, std::vector<std::string> &result) {
   bool allkeys = (pattern[0] == '*' && pattern.length() == 1);
   for(std::map<std::string, std::map<std::string, std::string> >::iterator it = store.begin(); it != store.end(); it++) {
     const std::string &key = it->first;
     if(allkeys || XrdRedis_stringmatchlen(pattern.c_str(), pattern.length(),
                                           key.c_str(), key.length(), 0)) {
-      ret.push_back(key);
+        result.push_back(key);
     }
   }
-  return ret;
+  return OK();
 }

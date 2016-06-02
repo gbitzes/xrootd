@@ -23,6 +23,7 @@
 #include "XrdRedisProtocol.hh"
 #include "XrdRedisSTL.hh"
 #include "XrdRedisRocksDB.hh"
+#include "XrdOuc/XrdOucEnv.hh"
 #include <stdlib.h>
 #include <algorithm>
 
@@ -43,6 +44,8 @@ XrdRedisBackend *XrdRedisProtocol::backend = 0;
 int XrdRedisProtocol::readWait = 0;
 
 enum CmdType {
+  CMD_PING,
+
   CMD_GET,
   CMD_SET,
   CMD_EXISTS,
@@ -72,6 +75,8 @@ std::map<std::string, CmdType> cmdMap;
 
 struct cmdMapInit {
   cmdMapInit() {
+    cmdMap["ping"] = CMD_PING;
+
     cmdMap["get"] = CMD_GET;
     cmdMap["set"] = CMD_SET;
     cmdMap["exists"] = CMD_EXISTS;
@@ -172,7 +177,7 @@ int XrdRedisProtocol::ReadRequest(XrdLink *lp) {
     request_size = reqsize;
     element_size = 0;
     current_element = 0;
-    TRACEI(ALL, "Received size of array: " << request_size);
+    TRACEI(DEBUG, "Received size of array: " << request_size);
   }
 
   for( ; current_element < request_size; current_element++) {
@@ -183,9 +188,9 @@ int XrdRedisProtocol::ReadRequest(XrdLink *lp) {
     buff_position = 0;
   }
 
-  TRACEI(ALL, "Received command:");
+  TRACEI(DEBUG, "Received command:");
   for(unsigned i = 0; i < request.size(); i++) {
-    TRACEI(ALL, request[i]);
+    TRACEI(DEBUG, request[i]);
   }
 
   return 1;
@@ -280,6 +285,12 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
   XrdRedisStatus st;
 
   switch(cmd->second) {
+    case CMD_PING: {
+      if(request.size() > 2) return SendErrArgs(command);
+
+      if(request.size() == 1) return SendPong();
+      if(request.size() == 2) return SendString(request[1]);
+    }
     case CMD_GET: {
       if(request.size() != 2) return SendErrArgs(command);
 
@@ -322,7 +333,9 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
     case CMD_KEYS: {
       if(request.size() != 2) return SendErrArgs(command);
 
-      std::vector<std::string> ret = backend->keys(request[1]);
+      std::vector<std::string> ret;
+      XrdRedisStatus st = backend->keys(request[1], ret);
+      if(!st.ok()) return SendErr(st);
       return SendArray(ret);
     }
     case CMD_HGET: {
@@ -374,18 +387,9 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
     case CMD_HINCRBY: {
       if(request.size() != 4) return SendErrArgs(command);
 
-      char *endptr;
-      long long incby = strtoll(request[3].c_str(), &endptr, 10);
-      // return Send(SSTR("-ERR I got " << incby << " and endptr is " << endptr << "\r\n"));
-      if(*endptr != '\0' || incby == LLONG_MIN || incby == LLONG_MAX) {
-        return SendErr("value is not an integer or out of range");
-      }
-
-      long long ret;
-      if(!backend->hincrby(request[1], request[2], incby, ret)) {
-        return SendErr("hash value is not an integer");
-      }
-
+      int64_t ret = 0;
+      XrdRedisStatus st = backend->hincrby(request[1], request[2], request[3], ret);
+      if(!st.ok()) return SendErr(st);
       return SendNumber(ret);
     }
     case CMD_HDEL: {
@@ -420,7 +424,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       std::vector<std::string> arr;
       XrdRedisStatus st = backend->hgetall(request[1], arr);
       if(!st.ok()) return SendErr(st);
-      
+
       return SendScanResp("0", arr);
     }
     case CMD_SADD: {
@@ -428,43 +432,51 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
 
       int count = 0;
       for(unsigned i = 2; i < request.size(); i++) {
-        count += backend->sadd(request[1], request[i]);
+        XrdRedisStatus st = backend->sadd(request[1], request[i], count);
+        if(!st.ok()) return SendErr(st);
       }
       return SendNumber(count);
     }
     case CMD_SISMEMBER: {
       if(request.size() != 3) return SendErrArgs(command);
 
-      int answer = 0;
-      if(backend->sismember(request[1], request[2])) {
-        answer = 1;
-      }
-
-      return SendNumber(answer);
+      XrdRedisStatus st = backend->sismember(request[1], request[2]);
+      if(st.ok()) return SendNumber(1);
+      if(st.IsNotFound()) return SendNumber(0);
+      return SendErr(st);
     }
     case CMD_SREM: {
       if(request.size() <= 2) return SendErrArgs(command);
 
       int count = 0;
       for(unsigned i = 2; i < request.size(); i++) {
-        count += backend->srem(request[1], request[i]);
+        XrdRedisStatus st = backend->srem(request[1], request[i]);
+        if(st.ok()) count++;
+        else if(!st.IsNotFound()) return SendErr(st);
       }
       return SendNumber(count);
     }
     case CMD_SMEMBERS: {
       if(request.size() != 2) return SendErrArgs(command);
-      const std::vector<std::string> arr = backend->smembers(request[1]);
-      return SendArray(arr);
+      std::vector<std::string> members;
+      XrdRedisStatus st = backend->smembers(request[1], members);
+      if(!st.ok()) return SendErr(st);
+      return SendArray(members);
     }
     case CMD_SCARD: {
       if(request.size() != 2) return SendErrArgs(command);
-      return SendNumber(backend->scard(request[1]));
+      size_t count;
+      XrdRedisStatus st = backend->scard(request[1], count);
+      if(!st.ok()) return SendErr(st);
+      return SendNumber(count);
     }
     case CMD_SSCAN: {
       if(request.size() != 3) return SendErrArgs(command);
       if(request[2] != "0") return SendErr("invalid cursor");
-      std::vector<std::string> arr = backend->smembers(request[1]);
-      return SendScanResp("0", arr);
+      std::vector<std::string> members;
+      XrdRedisStatus st = backend->smembers(request[1], members);
+      if(!st.ok()) return SendErr(st);
+      return SendScanResp("0", members);
     }
     default: {
       return SendErr("an unknown error occurred when dispatching the command");
@@ -529,6 +541,11 @@ int XrdRedisProtocol::SendNull() {
   return Send("$-1\r\n");
 }
 
+int XrdRedisProtocol::SendPong() {
+  return Send("+PONG\r\n");
+
+}
+
 
 
 
@@ -551,6 +568,89 @@ void XrdRedisProtocol::DoIt() {
 
 }
 
+// copied from XrdHttp
+int XrdRedisProtocol::xtrace(XrdOucStream & Config) {
+
+  char *val;
+
+  static struct traceopts {
+    const char *opname;
+    int opval;
+  } tropts[] = {
+    {"all", TRACE_ALL},
+    {"emsg", TRACE_EMSG},
+    {"debug", TRACE_DEBUG},
+    {"fs", TRACE_FS},
+    {"login", TRACE_LOGIN},
+    {"mem", TRACE_MEM},
+    {"stall", TRACE_STALL},
+    {"redirect", TRACE_REDIR},
+    {"request", TRACE_REQ},
+    {"response", TRACE_RSP}
+  };
+  int i, neg, trval = 0, numopts = sizeof (tropts) / sizeof (struct traceopts);
+
+  if (!(val = Config.GetWord())) {
+    eDest.Emsg("config", "trace option not specified");
+    return 1;
+  }
+  while (val) {
+    if (!strcmp(val, "off")) trval = 0;
+    else {
+      if ((neg = (val[0] == '-' && val[1]))) val++;
+      for (i = 0; i < numopts; i++) {
+        if (!strcmp(val, tropts[i].opname)) {
+          if (neg) trval &= ~tropts[i].opval;
+          else trval |= tropts[i].opval;
+          break;
+        }
+      }
+      if (i >= numopts)
+        eDest.Emsg("config", "invalid trace option", val);
+    }
+    val = Config.GetWord();
+  }
+  XrdRedisTrace->What = trval;
+  return 0;
+}
+
+#define TS_Xeq(x,m) (!strcmp(x,var)) GoNo = m(Config)
+
+int XrdRedisProtocol::Config(const char *ConfigFN) {
+  XrdOucEnv myEnv;
+  XrdOucStream Config(&eDest, getenv("XRDINSTANCE"), &myEnv, "=====> ");
+  char *var;
+  int cfgFD, GoNo, NoGo = 0, ismine;
+
+  // Open and attach the config file
+  //
+  if ((cfgFD = open(ConfigFN, O_RDONLY, 0)) < 0)
+    return eDest.Emsg("Config", errno, "open config file", ConfigFN);
+  Config.Attach(cfgFD);
+
+  // Process items
+  //
+  while ((var = Config.GetMyFirstWord())) {
+    if ((ismine = !strncmp("redis.", var, 6)) && var[6]) var += 6;
+    // else if ((ismine = !strcmp("all.export", var))) var += 4;
+    // else if ((ismine = !strcmp("all.pidpath", var))) var += 4;
+
+    if (ismine) {
+           if TS_Xeq("trace", xtrace);
+      else {
+        eDest.Say("Config warning: ignoring unknown directive '", var, "'.");
+        Config.Echo();
+        continue;
+      }
+      if (GoNo) {
+        Config.Echo();
+        NoGo = 1;
+      }
+    }
+  }
+  return NoGo;
+}
+
 int XrdRedisProtocol::Configure(char *parms, XrdProtocol_Config * pi) {
   BPool = pi->BPool;
 
@@ -562,6 +662,43 @@ int XrdRedisProtocol::Configure(char *parms, XrdProtocol_Config * pi) {
 
   // readWait = 30000;
   readWait = 100;
+
+
+  // Process items
+  //
+  // while ((var = Config.GetMyFirstWord())) {
+  //   if ((ismine = !strncmp("http.", var, 5)) && var[5]) var += 5;
+  //   else if ((ismine = !strcmp("all.export", var))) var += 4;
+  //   else if ((ismine = !strcmp("all.pidpath", var))) var += 4;
+  //
+  //   if (ismine) {
+  //          if TS_Xeq("trace", xtrace);
+  //     else if TS_Xeq("cert", xsslcert);
+  //     else if TS_Xeq("key", xsslkey);
+  //     else if TS_Xeq("cadir", xsslcadir);
+  //     else if TS_Xeq("gridmap", xgmap);
+  //     else if TS_Xeq("cafile", xsslcafile);
+  //     else if TS_Xeq("secretkey", xsecretkey);
+  //     else if TS_Xeq("desthttps", xdesthttps);
+  //     else if TS_Xeq("secxtractor", xsecxtractor);
+  //     else if TS_Xeq("selfhttps2http", xselfhttps2http);
+  //     else if TS_Xeq("embeddedstatic", xembeddedstatic);
+  //     else if TS_Xeq("listingredir", xlistredir);
+  //     else if TS_Xeq("staticredir", xstaticredir);
+  //     else if TS_Xeq("staticpreload", xstaticpreload);
+  //     else if TS_Xeq("listingdeny", xlistdeny);
+  //     else {
+  //       eDest.Say("Config warning: ignoring unknown directive '", var, "'.");
+  //       Config.Echo();
+  //       continue;
+  //     }
+  //     if (GoNo) {
+  //
+  //       Config.Echo();
+  //       NoGo = 1;
+  //     }
+  //   }
+  // }
 
   backend = new XrdRedisRocksDB("/home/gbitzes/redisdb");
   return 1;

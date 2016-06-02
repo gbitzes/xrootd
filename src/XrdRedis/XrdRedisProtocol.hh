@@ -35,6 +35,7 @@
 #include "Xrd/XrdLink.hh"
 #include "Xrd/XrdBuffer.hh"
 #include "XrdOuc/XrdOucString.hh"
+#include "XrdOuc/XrdOucStream.hh"
 
 #include "XrdRedisTrace.hh"
 #include "XrdRedisBackend.hh"
@@ -54,6 +55,8 @@ class XrdRedisProtocol : public XrdProtocol {
 public:
   /// Read and apply the configuration
   static int Configure(char *parms, XrdProtocol_Config *pi);
+  static int xtrace(XrdOucStream &Config);
+  static int Config(const char *ConfigFN);
 
   /// Implementation of XrdProtocol interface
   XrdProtocol *Match(XrdLink *lp);
@@ -115,6 +118,7 @@ private:
   int SendErr(const std::string &msg);
   int SendErr(const XrdRedisStatus &st);
   int SendScanResp(const std::string &marker, const std::vector<std::string> &err);
+  int SendPong();
 
 protected:
   static XrdBuffManager *BPool; // Buffer manager

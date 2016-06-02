@@ -36,7 +36,7 @@ public:
   XrdRedisStatus hexists(const std::string &key, const std::string &field);
   XrdRedisStatus hkeys(const std::string &key, std::vector<std::string> &keys);
   XrdRedisStatus hgetall(const std::string &key, std::vector<std::string> &res);
-  bool hincrby(const std::string &key, const std::string &field, long long incrby, long long &result);
+  XrdRedisStatus hincrby(const std::string &key, const std::string &field, const std::string &incrby, int64_t &result);
   XrdRedisStatus hdel(const std::string &key, const std::string &field);
   XrdRedisStatus hlen(const std::string &key, size_t &len);
   XrdRedisStatus hvals(const std::string &key, std::vector<std::string> &vals);
@@ -45,16 +45,18 @@ public:
   XrdRedisStatus get(const std::string &key, std::string &value);
   XrdRedisStatus exists(const std::string &key);
   XrdRedisStatus del(const std::string &key);
-  std::vector<std::string> keys(const std::string &pattern);
+  XrdRedisStatus keys(const std::string &pattern, std::vector<std::string> &result);
 
-  int sadd(const std::string &key, const std::string &element);
-  bool sismember(const std::string &key, const std::string &element);
-  int srem(const std::string &key, const std::string &element);
-  std::vector<std::string> smembers(const std::string &key);
-  int scard(const std::string &key);
+  XrdRedisStatus sadd(const std::string &key, const std::string &element, int &added);
+  XrdRedisStatus sismember(const std::string &key, const std::string &element);
+  XrdRedisStatus srem(const std::string &key, const std::string &element);
+  XrdRedisStatus smembers(const std::string &key, std::vector<std::string> &members);
+  XrdRedisStatus scard(const std::string &key, size_t &count);
 private:
+  // if 0 keys are found matching prefix, it'll return kOk, not kNotFound!!
+  XrdRedisStatus remove_all_with_prefix(const std::string &prefix);
+
   rocksdb::DB* db;
-  std::map<std::string, std::map<std::string, std::string> > store;
 };
 
 #endif
