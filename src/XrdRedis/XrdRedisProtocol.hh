@@ -57,6 +57,7 @@ public:
   static int Configure(char *parms, XrdProtocol_Config *pi);
   static int xtrace(XrdOucStream &Config);
   static int Config(const char *ConfigFN);
+  static int xdb(XrdOucStream &Config);
 
   /// Implementation of XrdProtocol interface
   XrdProtocol *Match(XrdLink *lp);
@@ -123,6 +124,7 @@ private:
 protected:
   static XrdBuffManager *BPool; // Buffer manager
   static XrdRedisBackend *backend;
+  static std::string dbpath;
 
 
   static int readWait;

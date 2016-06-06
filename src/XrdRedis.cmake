@@ -14,9 +14,12 @@ if( ENABLE_REDIS )
   # Statically link to rocksdb
   #-------------------------------------------------------------------------------
 
-  set(ROCKS_DB_PATH /home/gbitzes/rocksdb-4.5.1/)
-  include_directories(${ROCKS_DB_PATH}/include)
-  link_directories(${ROCKS_DB_PATH})
+  if(NOT DEFINED ROCKSDB_PATH)
+    message(FATAL_ERROR "Error: cmake variable ROCKSDB_PATH not set")
+  endif()
+
+  include_directories(${ROCKSDB_PATH}/include)
+  link_directories(${ROCKSDB_PATH})
 
   #-----------------------------------------------------------------------------
   # The XrdRedis library

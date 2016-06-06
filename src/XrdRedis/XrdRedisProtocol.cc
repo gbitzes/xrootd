@@ -41,6 +41,7 @@ XrdOucTrace *XrdRedisTrace = 0;
 
 XrdBuffManager *XrdRedisProtocol::BPool = 0; // Buffer manager
 XrdRedisBackend *XrdRedisProtocol::backend = 0;
+std::string XrdRedisProtocol::dbpath;
 int XrdRedisProtocol::readWait = 0;
 
 enum CmdType {
@@ -281,8 +282,6 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
     return SendErr(SSTR("unknown command '" << request[0] << "'"));
   }
 
-  XrdRedisStatus st;
-
   switch(cmd->second) {
     case CMD_PING: {
       if(request.size() > 2) return SendErrArgs(command);
@@ -294,7 +293,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       if(request.size() != 2) return SendErrArgs(command);
 
       std::string value;
-      st = backend->get(request[1], value);
+      XrdRedisStatus st = backend->get(request[1], value);
       if(st.IsNotFound()) return SendNull();
       if(!st.ok()) return SendErr(st);
       return SendString(value);
@@ -302,7 +301,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
     case CMD_SET: {
       if(request.size() != 3) return SendErrArgs(command);
 
-      st = backend->set(request[1], request[2]);
+      XrdRedisStatus st = backend->set(request[1], request[2]);
       if(!st.ok()) return SendErr(st);
       return Send("+OK\r\n");
     }
@@ -311,7 +310,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
 
       int count = 0;
       for(unsigned i = 1; i < request.size(); i++) {
-        st = backend->exists(request[i]);
+        XrdRedisStatus st = backend->exists(request[i]);
         if(st.ok()) count++;
         else if(!st.IsNotFound()) SendErr(st);
 
@@ -323,7 +322,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
 
       int count = 0;
       for(unsigned i = 1; i < request.size(); i++) {
-        st = backend->del(request[i]);
+        XrdRedisStatus st = backend->del(request[i]);
         if(st.ok()) count++;
         else if(!st.IsNotFound()) return SendErr(st);
       }
@@ -341,7 +340,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       if(request.size() != 3) return SendErrArgs(command);
 
       std::string value;
-      st = backend->hget(request[1], request[2], value);
+      XrdRedisStatus st = backend->hget(request[1], request[2], value);
       if(st.IsNotFound()) SendNull();
       else if(!st.ok()) return SendErr(st);
 
@@ -354,7 +353,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       // it in the meantime the user gets a response of 1, not 0
 
       XrdRedisStatus existed = backend->hexists(request[1], request[2]);
-      if(!existed.ok() && !existed.IsNotFound()) return SendErr(st);
+      if(!existed.ok() && !existed.IsNotFound()) return SendErr(existed);
 
       XrdRedisStatus st = backend->hset(request[1], request[2], request[3]);
       if(!st.ok()) return SendErr(st);
@@ -636,6 +635,7 @@ int XrdRedisProtocol::Config(const char *ConfigFN) {
 
     if (ismine) {
            if TS_Xeq("trace", xtrace);
+           else if TS_Xeq("db", xdb);
       else {
         eDest.Say("Config warning: ignoring unknown directive '", var, "'.");
         Config.Echo();
@@ -650,6 +650,16 @@ int XrdRedisProtocol::Config(const char *ConfigFN) {
   return NoGo;
 }
 
+int XrdRedisProtocol::xdb(XrdOucStream &Config) {
+    char *val;
+    if (!(val = Config.GetWord())) {
+      eDest.Emsg("Config", "db option not specified"); return 1;
+    }
+
+    dbpath = val;
+    return 0;
+}
+
 int XrdRedisProtocol::Configure(char *parms, XrdProtocol_Config * pi) {
   BPool = pi->BPool;
 
@@ -659,47 +669,25 @@ int XrdRedisProtocol::Configure(char *parms, XrdProtocol_Config * pi) {
   XrdRedisTrace = new XrdOucTrace(&eDest);
   XrdRedisTrace->What = TRACE_ALL;
 
+  eDest.Emsg("Config", "redis: configuring");
+
   // readWait = 30000;
   readWait = 100;
 
+  eDest.Emsg("Config", "in Configure"); // redis.db not specified, unable to continue");
 
-  // Process items
-  //
-  // while ((var = Config.GetMyFirstWord())) {
-  //   if ((ismine = !strncmp("http.", var, 5)) && var[5]) var += 5;
-  //   else if ((ismine = !strcmp("all.export", var))) var += 4;
-  //   else if ((ismine = !strcmp("all.pidpath", var))) var += 4;
-  //
-  //   if (ismine) {
-  //          if TS_Xeq("trace", xtrace);
-  //     else if TS_Xeq("cert", xsslcert);
-  //     else if TS_Xeq("key", xsslkey);
-  //     else if TS_Xeq("cadir", xsslcadir);
-  //     else if TS_Xeq("gridmap", xgmap);
-  //     else if TS_Xeq("cafile", xsslcafile);
-  //     else if TS_Xeq("secretkey", xsecretkey);
-  //     else if TS_Xeq("desthttps", xdesthttps);
-  //     else if TS_Xeq("secxtractor", xsecxtractor);
-  //     else if TS_Xeq("selfhttps2http", xselfhttps2http);
-  //     else if TS_Xeq("embeddedstatic", xembeddedstatic);
-  //     else if TS_Xeq("listingredir", xlistredir);
-  //     else if TS_Xeq("staticredir", xstaticredir);
-  //     else if TS_Xeq("staticpreload", xstaticpreload);
-  //     else if TS_Xeq("listingdeny", xlistdeny);
-  //     else {
-  //       eDest.Say("Config warning: ignoring unknown directive '", var, "'.");
-  //       Config.Echo();
-  //       continue;
-  //     }
-  //     if (GoNo) {
-  //
-  //       Config.Echo();
-  //       NoGo = 1;
-  //     }
-  //   }
-  // }
+  char* rdf;
+  rdf = (parms && *parms ? parms : pi->ConfigFN);
+  if (rdf && Config(rdf)) return 0;
 
-  backend = new XrdRedisRocksDB("/home/gbitzes/redisdb");
+  if(dbpath.empty()) {
+    eDest.Emsg("Config", "redis.db not specified, unable to continue");
+    return 0;
+  }
+
+  // eDest.Say("Config", "Using db: ", dbpath.c_str());
+
+  backend = new XrdRedisRocksDB(dbpath);
   return 1;
 }
 
