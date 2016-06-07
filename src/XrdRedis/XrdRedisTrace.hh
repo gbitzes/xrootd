@@ -36,7 +36,6 @@
 #define TRACE_SCHED     0x0100
 #define TRACE_STALL     0x0200
 
-#define NODEBUG
 #ifndef NODEBUG
 
 #include "XrdSys/XrdSysHeaders.hh"
