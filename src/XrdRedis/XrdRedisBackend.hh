@@ -86,6 +86,8 @@ public:
   virtual XrdRedisStatus smembers(const std::string &key, std::vector<std::string> &members) = 0;
   virtual XrdRedisStatus scard(const std::string &key, size_t &count) = 0;
 
+  virtual XrdRedisStatus flushall() = 0;
+
   virtual ~XrdRedisBackend() {}
 };
 

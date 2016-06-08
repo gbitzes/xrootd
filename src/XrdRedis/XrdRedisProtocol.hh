@@ -120,6 +120,7 @@ private:
   int SendErr(const XrdRedisStatus &st);
   int SendScanResp(const std::string &marker, const std::vector<std::string> &err);
   int SendPong();
+  int SendOK();
 
 protected:
   static XrdBuffManager *BPool; // Buffer manager

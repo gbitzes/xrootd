@@ -46,6 +46,7 @@ int XrdRedisProtocol::readWait = 0;
 
 enum CmdType {
   CMD_PING,
+  CMD_FLUSHALL,
 
   CMD_GET,
   CMD_SET,
@@ -77,6 +78,7 @@ std::map<std::string, CmdType> cmdMap;
 struct cmdMapInit {
   cmdMapInit() {
     cmdMap["ping"] = CMD_PING;
+    cmdMap["flushall"] = CMD_FLUSHALL;
 
     cmdMap["get"] = CMD_GET;
     cmdMap["set"] = CMD_SET;
@@ -289,6 +291,12 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       if(request.size() == 1) return SendPong();
       if(request.size() == 2) return SendString(request[1]);
     }
+    case CMD_FLUSHALL: {
+      if(request.size() != 1) return SendErrArgs(command);
+      XrdRedisStatus st = backend->flushall();
+      if(!st.ok()) return SendErr(st);
+      return SendOK();
+    }
     case CMD_GET: {
       if(request.size() != 2) return SendErrArgs(command);
 
@@ -303,7 +311,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
 
       XrdRedisStatus st = backend->set(request[1], request[2]);
       if(!st.ok()) return SendErr(st);
-      return Send("+OK\r\n");
+      return SendOK();
     }
     case CMD_EXISTS: {
       if(request.size() <= 1) return SendErrArgs(command);
@@ -541,7 +549,10 @@ int XrdRedisProtocol::SendNull() {
 
 int XrdRedisProtocol::SendPong() {
   return Send("+PONG\r\n");
+}
 
+int XrdRedisProtocol::SendOK() {
+  return Send("+OK\r\n");
 }
 
 

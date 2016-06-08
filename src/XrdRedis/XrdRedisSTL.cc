@@ -170,3 +170,10 @@ XrdRedisStatus XrdRedisSTL::keys(const std::string &pattern, std::vector<std::st
   }
   return OK();
 }
+
+XrdRedisStatus XrdRedisSTL::flushall() {
+  for(auto it = store.begin(); it != store.end(); it++) {
+    it->second.clear();
+  }
+  return OK();
+}

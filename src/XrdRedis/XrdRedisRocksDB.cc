@@ -448,3 +448,7 @@ XrdRedisStatus XrdRedisRocksDB::keys(const std::string &pattern, std::vector<std
 
   return OK();
 }
+
+XrdRedisStatus XrdRedisRocksDB::flushall() {
+  return remove_all_with_prefix("");
+}

@@ -52,6 +52,8 @@ public:
   XrdRedisStatus srem(const std::string &key, const std::string &element);
   XrdRedisStatus smembers(const std::string &key, std::vector<std::string> &members);
   XrdRedisStatus scard(const std::string &key, size_t &count);
+
+  XrdRedisStatus flushall();
 private:
   // if 0 keys are found matching prefix, it'll return kOk, not kNotFound!!
   XrdRedisStatus remove_all_with_prefix(const std::string &prefix);
