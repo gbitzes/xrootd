@@ -28,8 +28,10 @@
 
 class XrdRedisRocksDB : public XrdRedisBackend {
 public:
-  XrdRedisRocksDB(const std::string &filename);
+  XrdRedisRocksDB();
   ~XrdRedisRocksDB();
+
+  XrdRedisStatus initialize(const std::string &filename);
 
   XrdRedisStatus hset(const std::string &key, const std::string &field, const std::string &value);
   XrdRedisStatus hget(const std::string &key, const std::string &field, std::string &value);

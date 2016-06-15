@@ -147,18 +147,25 @@ public:
   }
 };
 
-XrdRedisRocksDB::XrdRedisRocksDB(const std::string &filename) {
+XrdRedisStatus XrdRedisRocksDB::initialize(const std::string &filename) {
   std::cout << "constructing redis rocksdb backend" << std::endl;
   rocksdb::Options options;
   options.merge_operator.reset(new Int64AddOperator);
   options.create_if_missing = true;
   rocksdb::Status status = rocksdb::DB::Open(options, filename, &db);
-  assert(status.ok());
+  return status_convert(status);
+}
+
+XrdRedisRocksDB::XrdRedisRocksDB() {
+  db = nullptr;
 }
 
 XrdRedisRocksDB::~XrdRedisRocksDB() {
-  std::cout << "Closing connection to rocksdb" << std::endl;
-  delete db;
+  if(db) {
+    std::cout << "Closing connection to rocksdb" << std::endl;
+    delete db;
+    db = nullptr;
+  }
 }
 
 XrdRedisStatus XrdRedisRocksDB::hget(const std::string &key, const std::string &field, std::string &value) {

@@ -39,9 +39,11 @@
 
 #include "XrdRedisTrace.hh"
 #include "XrdRedisBackend.hh"
+#include "XrdRedisRocksDB.hh"
 
 #include <sstream>
 #include <vector>
+#include <deque>
 
 /******************************************************************************/
 /*                               D e f i n e s                                */
@@ -84,26 +86,38 @@ private:
   int request_size;
   int current_element;
   int element_size;
-  int buff_position;
+
+  // buffer for ReadInteger
+  std::string current_integer;
 
   int ReadRequest(XrdLink *lp);
-  int ReadElement(XrdLink *lp);
+  int ReadElement(XrdLink *lp, std::string &str);
   int ReadInteger(XrdLink *lp, char prefix);
-  int ReadString(XrdLink *lp, int nbytes);
+  int ReadString(XrdLink *lp, int nbytes, std::string &str);
 
   /// Parse and process a command
   int ProcessRequest(XrdLink *lp);
 
 
+  /// deque of buffers used to read and write requests
+  /// We always append - once a buffer is full, we allocate a new one
+  /// Once the contents of a buffer have been parsed, we release it
+  /// The pool manager will take care of re-using the memory and preventing
+  /// unnecessary allocations
 
+  std::deque<XrdBuffer*> buffers;
+  size_t position_read; // always points to the buffer at the front
+  size_t position_write; // always points to the buffer at the end
+  const size_t buffer_size = 1024 * 32;
 
-  /// Circular Buffer used to read requests
-  XrdBuffer *myBuff;
-  /// The circular pointers
-  char *myBuffStart, *myBuffEnd;
+  /// can I read len bytes from buffers?
+  /// will attempt to Recv if not enough data is ready yet
+  int canConsume(size_t len, XrdLink *lp);
+  /// read len bytes from buffers - must call canConsume previously
+  void consume(size_t len, std::string &str, XrdLink *lp);
 
-  /// A nice var to hold the current header line
-  XrdOucString tmpline;
+  // read bytes from link
+  int readFromLink(XrdLink *link);
 
   /// Parse and process a command
   int ProcessCommand(XrdOucString& tmpline);
@@ -124,7 +138,7 @@ private:
 
 protected:
   static XrdBuffManager *BPool; // Buffer manager
-  static XrdRedisBackend *backend;
+  static XrdRedisRocksDB *backend;
   static std::string dbpath;
 
 

@@ -40,7 +40,7 @@ const char *XrdRedisTraceID = "XrdRedis";
 XrdOucTrace *XrdRedisTrace = 0;
 
 XrdBuffManager *XrdRedisProtocol::BPool = 0; // Buffer manager
-XrdRedisBackend *XrdRedisProtocol::backend = 0;
+XrdRedisRocksDB *XrdRedisProtocol::backend = 0;
 std::string XrdRedisProtocol::dbpath;
 int XrdRedisProtocol::readWait = 0;
 
@@ -123,10 +123,8 @@ XrdRedisProtocol::ProtStack("ProtStack",
 
 XrdRedisProtocol::XrdRedisProtocol()
 : XrdProtocol("Redis protocol handler") {
-  myBuff = 0;
 
   request_size = 0;
-  buff_position = 0;
   element_size = 0;
 
   Reset();
@@ -149,22 +147,25 @@ XrdProtocol* XrdRedisProtocol::Match(XrdLink *lp) {
 int XrdRedisProtocol::Process(XrdLink *lp) {
   TRACEI(DEBUG, " Process. lp:" << lp);
 
-  if (!myBuff || !myBuff->buff || !myBuff->bsize) {
+  if(buffers.size() == 0 || !buffers[0]->buff || !buffers[0]->bsize) {
     TRACE(ALL, " Process. No buffer available. Internal error.");
     return -1;
   }
 
-  int rc = ReadRequest(lp);
-  if(rc == 0) return 1;
-  if(rc < 0) return rc;
+  while(true) {
+    int rc = ReadRequest(lp);
 
-  request_size = 0;
-  buff_position = 0;
+    if(rc == 0) return 1;
+    if(rc < 0) return rc;
 
-  rc = ProcessRequest(lp);
-  request.clear();
+    request_size = 0;
 
-  return rc;
+    rc = ProcessRequest(lp);
+    request.clear();
+  }
+
+
+  // return rc;
 }
 
 int XrdRedisProtocol::ReadRequest(XrdLink *lp) {
@@ -174,7 +175,9 @@ int XrdRedisProtocol::ReadRequest(XrdLink *lp) {
   //         negative on error
 
   if(request_size == 0) {
+    TRACEI(DEBUG, " Before read integer");
     int reqsize = ReadInteger(lp, '*');
+    TRACEI(DEBUG, " After read integer: " << reqsize);
     if(reqsize <= 0) return reqsize;
 
     request_size = reqsize;
@@ -184,11 +187,12 @@ int XrdRedisProtocol::ReadRequest(XrdLink *lp) {
   }
 
   for( ; current_element < request_size; current_element++) {
-    int rc = ReadElement(lp);
+    std::string str;
+    int rc = ReadElement(lp, str);
     if(rc <= 0) return rc;
-    request.push_back(std::string(myBuff->buff, rc));
+
+    request.push_back(str);
     element_size = 0;
-    buff_position = 0;
   }
 
   TRACEI(DEBUG, "Received command:");
@@ -199,74 +203,149 @@ int XrdRedisProtocol::ReadRequest(XrdLink *lp) {
   return 1;
 }
 
-int XrdRedisProtocol::ReadString(XrdLink *lp, int nbytes) {
-  int toread = nbytes - buff_position + 2;
-  TRACEI(DEBUG, "To read: " << toread);
-  int rlen = Link->Recv(myBuff->buff + buff_position, toread, readWait);
+int XrdRedisProtocol::ReadString(XrdLink *lp, int nbytes, std::string &str) {
+  int rlen = canConsume(nbytes+2, lp);
+  TRACEI(DEBUG, "in ReadString. canConsume: " << rlen);
   if(rlen <= 0) return rlen;
 
-  toread -= rlen;
-  buff_position += rlen;
-  if(toread > 0) return 0; // slow link
-
-  if(myBuff->buff[buff_position - 2] != '\r') {
-    TRACEI(ALL, "Protocol error, expected \\r, received " << myBuff->buff[buff_position-2]);
-    return -1;
-  }
-  if(myBuff->buff[buff_position - 1] != '\n') {
-    TRACEI(ALL, "Protocol error, expected \\n, received " << myBuff->buff[buff_position-1]);
-    return -1;
+  consume(nbytes+2, str, lp);
+  for(size_t i = 0; i < str.size(); i++) {
+    TRACEI(DEBUG, "ReadString: consumed byte " << (int) str[i]);
   }
 
-  TRACEI(DEBUG, "Got string: " << myBuff->buff);
-  return nbytes;
+  TRACEI(DEBUG, "ReadString: consume returned string with size " << str.size() << "'" << str << "'");
+
+  if(str[str.size()-2] != '\r') {
+    TRACEI(ALL, "Protocol error, expected \\r, received " << str[str.size()-2]);
+    return -1;
+  }
+
+  if(str[str.size()-1] != '\n') {
+    TRACEI(ALL, "Protocol error, expected \\n, received " << str[str.size()-1]);
+    return -1;
+  }
+
+  str.erase(str.begin()+str.size()-2, str.end());
+  TRACEI(DEBUG, "Got string: " << str);
+  return rlen;
 }
 
-int XrdRedisProtocol::ReadElement(XrdLink *lp) {
+int XrdRedisProtocol::ReadElement(XrdLink *lp, std::string &str) {
   TRACEI(DEBUG, "Element size: " << element_size);
   if(element_size == 0) {
     int elsize = ReadInteger(lp, '$');
     if(elsize <= 0) return elsize;
     element_size = elsize;
-    buff_position = 0;
   }
-  return ReadString(lp, element_size);
+  return ReadString(lp, element_size, str);
+}
+
+int XrdRedisProtocol::readFromLink(XrdLink *lp) {
+  int total_bytes = 0;
+  while(true) {
+    // how many bytes can I write to the end of the last buffer?
+    int available_space = buffer_size - position_write;
+
+    // non-blocking read
+    int rlen = Link->Recv(buffers.back()->buff + position_write, available_space, 0);
+    if(rlen < 0) return rlen; // an error occured, let Process deal with it
+
+    total_bytes += rlen;
+    // we asked for available_space bytes, we got fewer. Means no more data to read
+    if(rlen < available_space) {
+      position_write += rlen;
+      return total_bytes;
+    }
+
+    // we have more data to read, but no more space. Need to allocate buffer
+    buffers.push_back(BPool->Obtain(buffer_size));
+    position_write = 0;
+  }
+}
+
+int XrdRedisProtocol::canConsume(size_t len, XrdLink *lp) {
+  // we have n buffers, thus n*buffer_size bytes to read
+  size_t available_bytes = buffers.size() * buffer_size;
+
+  // .. minus, of course, the read and write markers for the first and last buffers
+  available_bytes -= position_read;
+  available_bytes -= buffer_size - position_write;
+  if(available_bytes >= len) return available_bytes;
+
+  // since we don't have enough bytes, try to read from the link
+  int rlink = readFromLink(lp);
+  if(rlink < 0) return rlink; // an error occurred, propagate to Process
+
+  available_bytes += rlink;
+  if(available_bytes >= len) return available_bytes;
+  return 0;
+}
+
+void XrdRedisProtocol::consume(size_t len, std::string &str, XrdLink *lp) {
+  str.clear();
+  str.reserve(len);
+
+  size_t remaining = len;
+  // we assume there's enough space..
+  while(remaining > 0) {
+    TRACEI(DEBUG, "reading from buffer: " << (int)buffers.front()->buff[0] <<
+                " " << (int) buffers.front()->buff[1] << " " << (int) buffers.front()->buff[2]);
+    // how many bytes to read from current buffer?
+    size_t available_bytes = buffer_size - position_read;
+    if(available_bytes >= remaining) {
+      available_bytes = remaining;
+    }
+    remaining -= available_bytes;
+
+    // add them
+    TRACEI(DEBUG, "Appending " << available_bytes << " bytes to str");
+    str.append(buffers.front()->buff + position_read, available_bytes);
+    position_read += available_bytes;
+
+    if(position_read >= buffer_size) {
+      TRACEI(DEBUG, "An entire buffer has been consumed, releasing");
+      // an entire buffer has been consumed
+      BPool->Release(buffers.front());
+      buffers.pop_front();
+      position_read = 0;
+    }
+  }
 }
 
 int XrdRedisProtocol::ReadInteger(XrdLink *lp, char prefix) {
-  // read a single integer
-  char prev = '\0';
+  std::string prev;
 
-  while(prev != '\n') {
-    int rlen = Link->Recv(myBuff->buff + buff_position, 1, readWait);
+  while(prev[0] != '\n') {
+    int rlen = canConsume(1, lp);
     if(rlen <= 0) return rlen;
 
-    prev = myBuff->buff[buff_position];
-    TRACEI(DEBUG, "Received byte: '" << prev << "'" << " " << (int) prev);
-    buff_position++;
+    consume(1, prev, lp);
+    current_integer.append(prev);
+
+    TRACEI(DEBUG, "Received byte: '" << prev << "'" << " " << (int) prev[0]);
+    TRACEI(DEBUG, "current_integer: '" << current_integer << "'");
   }
 
-  if(myBuff->buff[buff_position-2] != '\r') {
+  if(current_integer[current_integer.size()-2] != '\r') {
     TRACEI(ALL, "Protocol error, received \\n without preceeding \\r");
     return -1;
   }
 
-  if(myBuff->buff[0] != prefix) {
-    TRACEI(ALL, "Protocol error, expected an integer with preceeding '" << prefix << "', received '" << myBuff->buff[0] << "' instead");
+  if(current_integer[0] != prefix) {
+    TRACEI(ALL, "Protocol error, expected an integer with preceeding '" << prefix << "', received '" << current_integer[0] << "' instead");
     return -1;
   }
 
-  myBuff->buff[buff_position-2] = '\0';
+  current_integer.erase(current_integer.size()-2, 2);
 
   char *endptr;
-  long num = strtol(myBuff->buff+1, &endptr, 10);
+  long num = strtol(current_integer.c_str()+1, &endptr, 10);
   if(*endptr != '\0' || num == LONG_MIN || num == LONG_MAX) {
     TRACEI(ALL, "Protocol error, received an invalid integer");
     return -1;
   }
 
-  buff_position = 0;
-
+  current_integer = "";
   return num;
 }
 
@@ -559,10 +638,14 @@ int XrdRedisProtocol::SendOK() {
 
 
 void XrdRedisProtocol::Reset() {
-  if (!myBuff) {
-    myBuff = BPool->Obtain(1024 * 1024);
+  for(size_t i = 0; i < buffers.size(); i++) {
+    BPool->Release(buffers[i]);
   }
-  myBuffStart = myBuffEnd = myBuff->buff;
+  buffers.clear();
+  buffers.push_back(BPool->Obtain(buffer_size));
+
+  position_read = 0;
+  position_write = 0;
 }
 
 void XrdRedisProtocol::Recycle(XrdLink *lp,int consec,const char *reason) {
@@ -685,7 +768,7 @@ int XrdRedisProtocol::Configure(char *parms, XrdProtocol_Config * pi) {
   // readWait = 30000;
   readWait = 100;
 
-  eDest.Emsg("Config", "in Configure"); // redis.db not specified, unable to continue");
+  eDest.Emsg("Config", "in Configure");
 
   char* rdf;
   rdf = (parms && *parms ? parms : pi->ConfigFN);
@@ -698,7 +781,13 @@ int XrdRedisProtocol::Configure(char *parms, XrdProtocol_Config * pi) {
 
   // eDest.Say("Config", "Using db: ", dbpath.c_str());
 
-  backend = new XrdRedisRocksDB(dbpath);
+  backend = new XrdRedisRocksDB();
+  XrdRedisStatus st = backend->initialize(dbpath);
+  if(!st.ok()) {
+    eDest.Emsg("Config", "error while opening the db");
+    return 0;
+  }
+
   return 1;
 }
 
