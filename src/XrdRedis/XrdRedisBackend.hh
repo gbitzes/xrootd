@@ -80,7 +80,7 @@ public:
   virtual XrdRedisStatus hlen(const std::string &key, size_t &len) = 0;
   virtual XrdRedisStatus hvals(const std::string &key, std::vector<std::string> &vals) = 0;
 
-  virtual XrdRedisStatus sadd(const std::string &key, const std::string &element, int &added) = 0;
+  virtual XrdRedisStatus sadd(const std::string &key, const std::string &element, int64_t &added) = 0;
   virtual XrdRedisStatus sismember(const std::string &key, const std::string &element) = 0;
   virtual XrdRedisStatus srem(const std::string &key, const std::string &element) = 0;
   virtual XrdRedisStatus smembers(const std::string &key, std::vector<std::string> &members) = 0;

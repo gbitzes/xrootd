@@ -23,6 +23,7 @@
 #include "XrdRedisProtocol.hh"
 #include "XrdRedisSTL.hh"
 #include "XrdRedisRocksDB.hh"
+#include "XrdRedisTunnel.hh"
 #include "XrdOuc/XrdOucEnv.hh"
 #include <stdlib.h>
 #include <algorithm>
@@ -40,8 +41,10 @@ const char *XrdRedisTraceID = "XrdRedis";
 XrdOucTrace *XrdRedisTrace = 0;
 
 XrdBuffManager *XrdRedisProtocol::BPool = 0; // Buffer manager
-XrdRedisRocksDB *XrdRedisProtocol::backend = 0;
+XrdRedisBackend *XrdRedisProtocol::backend = 0;
 std::string XrdRedisProtocol::dbpath;
+std::string XrdRedisProtocol::tunnel;
+std::string XrdRedisProtocol::primary;
 int XrdRedisProtocol::readWait = 0;
 
 enum CmdType {
@@ -515,10 +518,12 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
     case CMD_SADD: {
       if(request.size() <= 2) return SendErrArgs(command);
 
-      int count = 0;
+      int64_t count = 0;
       for(unsigned i = 2; i < request.size(); i++) {
-        XrdRedisStatus st = backend->sadd(request[1], request[i], count);
+        int64_t tmp = 0;
+        XrdRedisStatus st = backend->sadd(request[1], request[i], tmp);
         if(!st.ok()) return SendErr(st);
+        count += tmp;
       }
       return SendNumber(count);
     }
@@ -707,6 +712,7 @@ int XrdRedisProtocol::xtrace(XrdOucStream & Config) {
 }
 
 #define TS_Xeq(x,m) (!strcmp(x,var)) GoNo = m(Config)
+#define FETCH(x,dest) (!strcmp(x,var)) GoNo = fetch_config(Config, x, dest)
 
 int XrdRedisProtocol::Config(const char *ConfigFN) {
   XrdOucEnv myEnv;
@@ -729,7 +735,9 @@ int XrdRedisProtocol::Config(const char *ConfigFN) {
 
     if (ismine) {
            if TS_Xeq("trace", xtrace);
-           else if TS_Xeq("db", xdb);
+           else if FETCH("primary", primary);
+           else if FETCH("tunnel", tunnel);
+           else if FETCH("db", dbpath);
       else {
         eDest.Say("Config warning: ignoring unknown directive '", var, "'.");
         Config.Echo();
@@ -744,14 +752,26 @@ int XrdRedisProtocol::Config(const char *ConfigFN) {
   return NoGo;
 }
 
-int XrdRedisProtocol::xdb(XrdOucStream &Config) {
-    char *val;
-    if (!(val = Config.GetWord())) {
-      eDest.Emsg("Config", "db option not specified"); return 1;
-    }
+int XrdRedisProtocol::fetch_config(XrdOucStream &Config, const std::string &msg, std::string &dest) {
+  char *val;
+  if (!(val = Config.GetWord())) {
+    eDest.Emsg("Config", SSTR(msg << " option not specified").c_str()); return 1;
+  }
 
-    dbpath = val;
-    return 0;
+  dest = val;
+  return 0;
+}
+
+static std::vector<std::string> split(std::string data, std::string token) {
+    std::vector<std::string> output;
+    size_t pos = std::string::npos;
+    do {
+        pos = data.find(token);
+        output.push_back(data.substr(0, pos));
+        if(std::string::npos != pos)
+            data = data.substr(pos + token.size());
+    } while (std::string::npos != pos);
+    return output;
 }
 
 int XrdRedisProtocol::Configure(char *parms, XrdProtocol_Config * pi) {
@@ -774,17 +794,52 @@ int XrdRedisProtocol::Configure(char *parms, XrdProtocol_Config * pi) {
   rdf = (parms && *parms ? parms : pi->ConfigFN);
   if (rdf && Config(rdf)) return 0;
 
-  if(dbpath.empty()) {
-    eDest.Emsg("Config", "redis.db not specified, unable to continue");
+  if(primary.empty()) {
+    eDest.Emsg("Config", "redis.primary not specified, unable to continue");
     return 0;
   }
 
-  // eDest.Say("Config", "Using db: ", dbpath.c_str());
+  // configure primary datastore
+  if(primary == "rocksdb") {
+    if(dbpath.empty()) {
+      eDest.Emsg("Config", "redis.dbpath required when the primary datastore is rocksdb");
+      return 0;
+    }
 
-  backend = new XrdRedisRocksDB();
-  XrdRedisStatus st = backend->initialize(dbpath);
-  if(!st.ok()) {
-    eDest.Emsg("Config", "error while opening the db");
+    XrdRedisRocksDB *rocksdb = new XrdRedisRocksDB();
+    XrdRedisStatus st = rocksdb->initialize(dbpath);
+    if(!st.ok()) {
+      eDest.Emsg("Config", SSTR("error while opening the db: " << st.ToString()).c_str());
+      return 0;
+    }
+
+    backend = rocksdb;
+  }
+  else if(primary == "tunnel") {
+    if(tunnel.empty()) {
+      eDest.Emsg("Config", "redis.tunnel required when the primary datastore is tunnelled");
+      return 0;
+    }
+
+    std::vector<std::string> components = split(tunnel, ":");
+    if(components.size() != 2) {
+      eDest.Emsg("Config", "malformed redis.tunnel. Syntax: ip:port");
+      return 0;
+    }
+
+    std::string ip = components[0];
+
+    char *endptr;
+    long port = strtol(components[1].c_str(), &endptr, 10);
+    if(*endptr != '\0' || port == LONG_MIN || port == LONG_MAX) {
+      eDest.Emsg("Config", "malformed ip in redis.tunnel: not a number");
+      return -1;
+    }
+
+    backend = new XrdRedisTunnel(ip, port);
+  }
+  else {
+    eDest.Emsg("Config", "unknown option for redis.primary, unable to continue");
     return 0;
   }
 

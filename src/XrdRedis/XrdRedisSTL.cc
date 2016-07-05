@@ -103,7 +103,7 @@ XrdRedisStatus XrdRedisSTL::hvals(const std::string &key, std::vector<std::strin
   return OK();
 }
 
-XrdRedisStatus XrdRedisSTL::sadd(const std::string &key, const std::string &element, int &added) {
+XrdRedisStatus XrdRedisSTL::sadd(const std::string &key, const std::string &element, int64_t &added) {
   if(store[key].find(element) == store[key].end()) {
     added++;
     store[key][element] = 1;

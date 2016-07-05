@@ -21,6 +21,20 @@ if( ENABLE_REDIS )
   include_directories(${ROCKSDB_PATH}/include)
   link_directories(${ROCKSDB_PATH})
 
+  #-------------------------------------------------------------------------------
+  # Statically link to hiredis
+  #-------------------------------------------------------------------------------
+
+  if(NOT DEFINED HIREDIS_INCLUDE_DIRS)
+    message(FATAL_ERROR "Error: cmake variable HIREDIS_INCLUDE_DIRS not set")
+  endif()
+
+  if(NOT DEFINED HIREDIS_LIBRARIES)
+    message(FATAL_ERROR "Error: cmake variable HIREDIS_LIBRARIES not set")
+  endif()
+
+  include_directories(${HIREDIS_INCLUDE_DIRS})
+
   #-----------------------------------------------------------------------------
   # The XrdRedis library
   #-----------------------------------------------------------------------------
@@ -34,13 +48,15 @@ if( ENABLE_REDIS )
     XrdRedis/XrdRedisSTL.cc       XrdRedis/XrdRedisSTL.hh
     XrdRedis/XrdRedisRocksDB.cc   XrdRedis/XrdRedisRocksDB.hh
     XrdRedis/XrdRedisProtocol.cc  XrdRedis/XrdRedisProtocol.hh
-    XrdRedis/XrdRedisUtil.cc      XrdRedis/XrdRedisUtil.hh)
+    XrdRedis/XrdRedisUtil.cc      XrdRedis/XrdRedisUtil.hh
+    XrdRedis/XrdRedisTunnel.cc    XrdRedis/XrdRedisTunnel.hh)
 
   target_link_libraries(
     ${LIB_XRD_REDIS}
     XrdServer
     XrdUtils
-    rocksdb)
+    rocksdb
+    ${HIREDIS_LIBRARIES})
 
   set_target_properties(
     ${LIB_XRD_REDIS}

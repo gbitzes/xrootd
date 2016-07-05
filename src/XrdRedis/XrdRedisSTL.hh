@@ -43,7 +43,7 @@ public:
   XrdRedisStatus del(const std::string &key);
   XrdRedisStatus keys(const std::string &pattern, std::vector<std::string> &result);
 
-  XrdRedisStatus sadd(const std::string &key, const std::string &element, int &added);
+  XrdRedisStatus sadd(const std::string &key, const std::string &element, int64_t &added);
   XrdRedisStatus sismember(const std::string &key, const std::string &element);
   XrdRedisStatus srem(const std::string &key, const std::string &element);
   XrdRedisStatus smembers(const std::string &key, std::vector<std::string> &members);

@@ -3,7 +3,7 @@
 //
 // Copyright (c) 2016 by European Organization for Nuclear Research (CERN)
 // Author: Georgios Bitzes <georgios.bitzes@cern.ch>
-// File Date: May 2016
+// File Date: July 2016
 //------------------------------------------------------------------------------
 // XRootD is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Lesser General Public License as published by
@@ -19,19 +19,17 @@
 // along with XRootD.  If not, see <http://www.gnu.org/licenses/>.
 //------------------------------------------------------------------------------
 
-#ifndef __XRDREDIS_ROCKSDB_H__
-#define __XRDREDIS_ROCKSDB_H__
+#ifndef __XRDREDIS_TUNNEL_H__
+#define __XRDREDIS_TUNNEL_H__
 
 #include "XrdRedisBackend.hh"
-#include <map>
-#include <rocksdb/db.h>
+#include <hiredis.h>
+#include <mutex>
+#include <memory>
 
-class XrdRedisRocksDB : public XrdRedisBackend {
+class XrdRedisTunnel : public XrdRedisBackend {
 public:
-  XrdRedisRocksDB();
-  ~XrdRedisRocksDB();
-
-  XrdRedisStatus initialize(const std::string &filename);
+  typedef std::shared_ptr<redisReply> redisReplyPtr;
 
   XrdRedisStatus hset(const std::string &key, const std::string &field, const std::string &value);
   XrdRedisStatus hget(const std::string &key, const std::string &field, std::string &value);
@@ -56,11 +54,32 @@ public:
   XrdRedisStatus scard(const std::string &key, size_t &count);
 
   XrdRedisStatus flushall();
-private:
-  // if 0 keys are found matching prefix, it'll return kOk, not kNotFound!!
-  XrdRedisStatus remove_all_with_prefix(const std::string &prefix);
 
-  rocksdb::DB* db;
+  XrdRedisTunnel(const std::string &ip, const int port);
+  ~XrdRedisTunnel();
+private:
+  std::string ip;
+  int port;
+
+  redisContext *ctx;
+  std::mutex mtx;
+
+  XrdRedisStatus ensureConnected();
+  void clearConnection();
+
+  XrdRedisStatus received_unexpected_reply(const redisReplyPtr reply);
+  XrdRedisStatus received_null_reply();
+  XrdRedisStatus expect_ok(const redisReplyPtr reply);
+  XrdRedisStatus expect_str(const redisReplyPtr reply, std::string &value);
+  XrdRedisStatus expect_size(const redisReplyPtr reply, size_t &value);
+  XrdRedisStatus expect_int64(const redisReplyPtr reply, int64_t &value);
+  XrdRedisStatus expect_exists(const redisReplyPtr reply);
+  XrdRedisStatus expect_list(const redisReplyPtr reply, std::vector<std::string> &vec);
+
+  redisReplyPtr forward(const char *fmt);
+  redisReplyPtr forward(const char *fmt, const std::string &s1);
+  redisReplyPtr forward(const char *fmt, const std::string &s1, const std::string &s2);
+  redisReplyPtr forward(const char *fmt, const std::string &s1, const std::string &s2, const std::string &s3);
 };
 
 #endif

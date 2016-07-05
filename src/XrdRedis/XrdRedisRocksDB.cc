@@ -295,7 +295,7 @@ XrdRedisStatus XrdRedisRocksDB::hvals(const std::string &key, std::vector<std::s
   return OK();
 }
 
-XrdRedisStatus XrdRedisRocksDB::sadd(const std::string &key, const std::string &element, int &added) {
+XrdRedisStatus XrdRedisRocksDB::sadd(const std::string &key, const std::string &element, int64_t &added) {
   std::string tkey = translate_key(kSet, key, element);
 
   std::string tmp;
