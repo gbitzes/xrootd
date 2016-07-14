@@ -375,7 +375,6 @@ XrdRedisStatus XrdRedisRocksDB::remove_all_with_prefix(const std::string &prefix
   for(iter->Seek(prefix); iter->Valid(); iter->Next()) {
     std::string key = iter->key().ToString();
     if(!startswith(key, prefix)) break;
-    // if(strncmp(key.c_str(), prefix.c_str(), prefix.size()) != 0) break;
     rocksdb::Status st = db->Delete(WriteOptions(), key);
     if(!st.ok()) return status_convert(st);
   }
@@ -453,6 +452,10 @@ XrdRedisStatus XrdRedisRocksDB::keys(const std::string &pattern, std::vector<std
     previous = redis_key;
   }
 
+  return OK();
+}
+
+XrdRedisStatus XrdRedisRocksDB::ping() {
   return OK();
 }
 

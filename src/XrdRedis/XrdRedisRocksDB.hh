@@ -55,6 +55,7 @@ public:
   XrdRedisStatus smembers(const std::string &key, std::vector<std::string> &members);
   XrdRedisStatus scard(const std::string &key, size_t &count);
 
+  XrdRedisStatus ping();
   XrdRedisStatus flushall();
 private:
   // if 0 keys are found matching prefix, it'll return kOk, not kNotFound!!

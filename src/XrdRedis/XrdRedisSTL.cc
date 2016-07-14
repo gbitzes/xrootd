@@ -177,3 +177,7 @@ XrdRedisStatus XrdRedisSTL::flushall() {
   }
   return OK();
 }
+
+XrdRedisStatus XrdRedisSTL::ping() {
+  return OK();
+}

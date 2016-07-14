@@ -49,6 +49,7 @@ public:
   XrdRedisStatus smembers(const std::string &key, std::vector<std::string> &members);
   XrdRedisStatus scard(const std::string &key, size_t &count);
 
+  XrdRedisStatus ping();
   XrdRedisStatus flushall();
 private:
   std::map<std::string, std::map<std::string, std::string> > store;

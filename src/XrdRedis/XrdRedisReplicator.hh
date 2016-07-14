@@ -46,15 +46,34 @@ public:
   XrdRedisStatus hlen(const std::string &key, size_t &len);
   XrdRedisStatus hvals(const std::string &key, std::vector<std::string> &vals);
 
-  XrdRedisStatus sadd(const std::string &key, const std::string &element, int &added);
+  XrdRedisStatus sadd(const std::string &key, const std::string &element, int64_t &added);
   XrdRedisStatus sismember(const std::string &key, const std::string &element);
   XrdRedisStatus srem(const std::string &key, const std::string &element);
   XrdRedisStatus smembers(const std::string &key, std::vector<std::string> &members);
   XrdRedisStatus scard(const std::string &key, size_t &count);
 
+  XrdRedisStatus ping();
   XrdRedisStatus flushall();
 
-  ~XrdRedisReplicator() {}
+  XrdRedisReplicator(XrdRedisBackend *primary_, std::vector<XrdRedisBackend*> replicas_);
+  ~XrdRedisReplicator();
+private:
+  struct ReplicaState {
+    int64_t revision;
+    XrdRedisBackend *backend;
+    bool online;
+  };
+
+  struct JournalEntry {
+    int64_t revision;
+    std::string command;
+    std::vector<std::string> arguments;
+  };
+
+  XrdRedisStatus applyUpdate(ReplicaState &state, const JournalEntry &entry);
+
+  ReplicaState primary;
+  std::vector<ReplicaState> replicas;
 };
 
 

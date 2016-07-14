@@ -45,11 +45,12 @@ if( ENABLE_REDIS )
     ${LIB_XRD_REDIS}
     MODULE
     XrdRedis/XrdRedisPlugin.cc
-    XrdRedis/XrdRedisSTL.cc       XrdRedis/XrdRedisSTL.hh
-    XrdRedis/XrdRedisRocksDB.cc   XrdRedis/XrdRedisRocksDB.hh
-    XrdRedis/XrdRedisProtocol.cc  XrdRedis/XrdRedisProtocol.hh
-    XrdRedis/XrdRedisUtil.cc      XrdRedis/XrdRedisUtil.hh
-    XrdRedis/XrdRedisTunnel.cc    XrdRedis/XrdRedisTunnel.hh)
+    XrdRedis/XrdRedisSTL.cc         XrdRedis/XrdRedisSTL.hh
+    XrdRedis/XrdRedisRocksDB.cc     XrdRedis/XrdRedisRocksDB.hh
+    XrdRedis/XrdRedisProtocol.cc    XrdRedis/XrdRedisProtocol.hh
+    XrdRedis/XrdRedisUtil.cc        XrdRedis/XrdRedisUtil.hh
+    XrdRedis/XrdRedisTunnel.cc      XrdRedis/XrdRedisTunnel.hh
+    XrdRedis/XrdRedisReplicator.cc  XrdRedis/XrdRedisReplicator.hh)
 
   target_link_libraries(
     ${LIB_XRD_REDIS}

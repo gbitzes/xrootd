@@ -23,13 +23,65 @@
 #define __XRDREDIS_TUNNEL_H__
 
 #include "XrdRedisBackend.hh"
+#include "XrdRedisQueue.hh"
 #include <hiredis.h>
 #include <mutex>
 #include <memory>
 
+typedef std::shared_ptr<redisReply> redisReplyPtr;
+
+class XrdRedisConnection {
+public:
+  XrdRedisConnection(std::string _ip, int _port);
+  ~XrdRedisConnection();
+
+  XrdRedisStatus ensureConnected();
+  void clearConnection();
+  redisContext* ctx;
+
+  XrdRedisStatus received_unexpected_reply(const redisReplyPtr reply);
+  XrdRedisStatus received_null_reply();
+
+  template <class ...Args>
+  redisReplyPtr execute(const Args & ... args);
+private:
+  std::string ip;
+  int port;
+};
+
+class XrdRedisConnectionPool {
+public:
+  XrdRedisConnection* acquire();
+  void release(XrdRedisConnection*);
+
+  XrdRedisConnectionPool(std::string _ip, int _port, size_t _size);
+private:
+  XrdRedisQueue<XrdRedisConnection*> connections;
+  XrdRedisConnection* create();
+
+  std::string ip;
+  int port;
+  size_t size;
+};
+
+class XrdRedisConnectionGrabber {
+public:
+  XrdRedisConnectionGrabber(XrdRedisConnectionPool &pool);
+  ~XrdRedisConnectionGrabber();
+
+  XrdRedisConnection* operator->() const {
+    return conn;
+  }
+private:
+  XrdRedisConnectionGrabber(const XrdRedisConnectionGrabber&) = delete;
+  XrdRedisConnectionGrabber& operator=(const XrdRedisConnectionGrabber&) = delete;
+  
+  XrdRedisConnectionPool &pool;
+  XrdRedisConnection *conn;
+};
+
 class XrdRedisTunnel : public XrdRedisBackend {
 public:
-  typedef std::shared_ptr<redisReply> redisReplyPtr;
 
   XrdRedisStatus hset(const std::string &key, const std::string &field, const std::string &value);
   XrdRedisStatus hget(const std::string &key, const std::string &field, std::string &value);
@@ -53,33 +105,34 @@ public:
   XrdRedisStatus smembers(const std::string &key, std::vector<std::string> &members);
   XrdRedisStatus scard(const std::string &key, size_t &count);
 
+  XrdRedisStatus ping();
   XrdRedisStatus flushall();
 
-  XrdRedisTunnel(const std::string &ip, const int port);
+  XrdRedisTunnel(const std::string &ip, const int port, size_t nconnections=10);
   ~XrdRedisTunnel();
 private:
   std::string ip;
   int port;
 
-  redisContext *ctx;
-  std::mutex mtx;
+  XrdRedisConnectionPool pool;
 
-  XrdRedisStatus ensureConnected();
-  void clearConnection();
+  template <class ...Args>
+  XrdRedisStatus expect_list(std::vector<std::string> &vec, const std::string &cmd, const Args & ... args);
 
-  XrdRedisStatus received_unexpected_reply(const redisReplyPtr reply);
-  XrdRedisStatus received_null_reply();
-  XrdRedisStatus expect_ok(const redisReplyPtr reply);
-  XrdRedisStatus expect_str(const redisReplyPtr reply, std::string &value);
-  XrdRedisStatus expect_size(const redisReplyPtr reply, size_t &value);
-  XrdRedisStatus expect_int64(const redisReplyPtr reply, int64_t &value);
-  XrdRedisStatus expect_exists(const redisReplyPtr reply);
-  XrdRedisStatus expect_list(const redisReplyPtr reply, std::vector<std::string> &vec);
+  template <class IntegerType, class ...Args>
+  XrdRedisStatus expect_integer(IntegerType &value, const std::string &cmd, const Args & ... args);
 
-  redisReplyPtr forward(const char *fmt);
-  redisReplyPtr forward(const char *fmt, const std::string &s1);
-  redisReplyPtr forward(const char *fmt, const std::string &s1, const std::string &s2);
-  redisReplyPtr forward(const char *fmt, const std::string &s1, const std::string &s2, const std::string &s3);
+  template <class ...Args>
+  XrdRedisStatus expect_str(std::string &value, const std::string &cmd, const Args & ... args);
+
+  template <class ...Args>
+  XrdRedisStatus expect_ok(const std::string &cmd, const Args & ... args);
+
+  template <class ...Args>
+  XrdRedisStatus expect_pong(const std::string &cmd, const Args & ... args);
+
+  template <class ...Args>
+  XrdRedisStatus expect_exists(const std::string &cmd, const Args & ... args);
 };
 
 #endif

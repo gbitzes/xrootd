@@ -23,107 +23,42 @@
 #include <sstream>
 
 #define SSTR(message) static_cast<std::ostringstream&>(std::ostringstream().flush() << message).str()
-//
-#define LOCK_AND_CONNECT() std::lock_guard<std::mutex> lock(this->mtx); \
-                         { XrdRedisStatus st = this->ensureConnected(); \
-                           if(!st.ok()) return st; }
+
+#define RUN_COMMAND(reply, conn, pool, cmd, args)               \
+XrdRedisConnectionGrabber conn(pool);                           \
+{ XrdRedisStatus st = conn->ensureConnected();                  \
+  if(!st.ok()) return st; }                                     \
+redisReplyPtr reply = conn->execute(cmd, args...);              \
+if(reply == NULL) return conn->received_null_reply();           \
+
+XrdRedisConnectionGrabber::XrdRedisConnectionGrabber(XrdRedisConnectionPool &_pool)
+: pool(_pool), conn(pool.acquire()) { }
+
+XrdRedisConnectionGrabber::~XrdRedisConnectionGrabber() {
+  pool.release(conn);
+}
 
 static XrdRedisStatus OK() {
   return XrdRedisStatus(rocksdb::Status::kOk);
 }
 
-XrdRedisStatus XrdRedisTunnel::received_unexpected_reply(const redisReplyPtr reply) {
-  return XrdRedisStatus(rocksdb::Status::kAborted, "Unexpected reply");
+XrdRedisConnection::~XrdRedisConnection() {
+  clearConnection();
 }
 
-XrdRedisStatus XrdRedisTunnel::received_null_reply() {
-  std::string err = SSTR("Context error when talking to " << ip << ":" << port << ": " << ctx->errstr);
-  return XrdRedisStatus(
-    rocksdb::Status::kAborted,
-    err
-  );
+XrdRedisConnection::XrdRedisConnection(std::string _ip, int _port)
+: ctx(nullptr), ip(_ip), port(_port) {
+  std::cout << "Creating connection.." << std::endl;
 }
 
-typedef XrdRedisTunnel::redisReplyPtr redisReplyPtr;
-
-XrdRedisStatus XrdRedisTunnel::expect_ok(const redisReplyPtr reply) {
-  if(reply == NULL) return received_null_reply();
-
-  if(reply->type == REDIS_REPLY_STATUS && strcmp(reply->str, "OK") == 0) {
-    return OK();
+void XrdRedisConnection::clearConnection() {
+  if(ctx) {
+    redisFree(ctx);
+    ctx = nullptr;
   }
-  return received_unexpected_reply(reply);
 }
 
-XrdRedisStatus XrdRedisTunnel::expect_str(const redisReplyPtr reply, std::string &value) {
-  if(reply == NULL) return received_null_reply();
-
-  if(reply->type == REDIS_REPLY_STRING) {
-    value = std::string(reply->str, reply->len);
-    return OK();
-  }
-  else if(reply->type == REDIS_REPLY_NIL) {
-    return XrdRedisStatus(rocksdb::Status::kNotFound, "");
-  }
-
-  return received_unexpected_reply(reply);
-}
-
-XrdRedisStatus XrdRedisTunnel::expect_size(const redisReplyPtr reply, size_t &value) {
-  if(reply == NULL) return received_null_reply();
-
-  if(reply->type == REDIS_REPLY_INTEGER) {
-    value = reply->integer;
-    return OK();
-  }
-  return received_unexpected_reply(reply);
-}
-
-XrdRedisStatus XrdRedisTunnel::expect_int64(const redisReplyPtr reply, int64_t &value) {
-  if(reply == NULL) return received_null_reply();
-
-  if(reply->type == REDIS_REPLY_INTEGER) {
-    value = reply->integer;
-    return OK();
-  }
-  return received_unexpected_reply(reply);
-}
-
-
-XrdRedisStatus XrdRedisTunnel::expect_exists(const redisReplyPtr reply) {
-  if(reply == NULL) return received_null_reply();
-
-  if(reply->type == REDIS_REPLY_INTEGER) {
-    if(reply->integer == 0) return XrdRedisStatus(rocksdb::Status::kNotFound, "");
-    if(reply->integer == 1) return OK();
-  }
-
-  return received_unexpected_reply(reply);
-}
-
-XrdRedisStatus XrdRedisTunnel::expect_list(const redisReplyPtr reply, std::vector<std::string> &vec) {
-  if(reply == NULL) return received_null_reply();
-
-  if(reply->type == REDIS_REPLY_ARRAY) {
-    for(size_t i = 0; i < reply->elements; i++) {
-      if(reply->element[i]->type != REDIS_REPLY_STRING) return received_unexpected_reply(reply);
-      vec.push_back(std::string(reply->element[i]->str, reply->element[i]->len));
-    }
-    return OK();
-  }
-  return received_unexpected_reply(reply);
-}
-
-static redisReplyPtr redisCommandPtr(redisContext *ctx, const char *fmt, ...) {
-  va_list args;
-  va_start(args, fmt);
-  redisReply *reply = (redisReply*) redisvCommand(ctx, fmt, args);
-  va_end(args);
-
-  return redisReplyPtr(reply, freeReplyObject);
-}
-
-XrdRedisStatus XrdRedisTunnel::ensureConnected() {
+XrdRedisStatus XrdRedisConnection::ensureConnected() {
   if(ctx && ctx->err) clearConnection();
 
   if(!ctx) {
@@ -143,138 +78,209 @@ XrdRedisStatus XrdRedisTunnel::ensureConnected() {
   return OK();
 }
 
-void XrdRedisTunnel::clearConnection() {
-  if(ctx) {
-    redisFree(ctx);
-    ctx = nullptr;
+template <class ...Args>
+redisReplyPtr XrdRedisConnection::execute(const Args & ... args) {
+  const char *cstr[] = { (args.c_str())... };
+  size_t sizes[] = { (args.size())... };
+
+  redisReply *reply = (redisReply*) redisCommandArgv(ctx, sizeof...(args), cstr, sizes);
+
+  return redisReplyPtr(reply, freeReplyObject);
+}
+
+XrdRedisConnectionPool::XrdRedisConnectionPool(std::string _ip, int _port, size_t _size)
+: ip(_ip), port(_port), size(_size) {
+
+  for(size_t i = 0; i < _size; i++) {
+    connections.enqueue(create());
   }
 }
 
-XrdRedisTunnel::XrdRedisTunnel(const std::string &ip_, const int port_): ip(ip_), port(port_) {
-  ctx = nullptr;
+XrdRedisConnection* XrdRedisConnectionPool::create() {
+  return new XrdRedisConnection(ip, port);
+}
+
+XrdRedisConnection* XrdRedisConnectionPool::acquire() {
+  return connections.dequeue();
+}
+
+void XrdRedisConnectionPool::release(XrdRedisConnection *conn) {
+  connections.enqueue(conn);
+}
+
+XrdRedisStatus XrdRedisConnection::received_unexpected_reply(const redisReplyPtr reply) {
+  return XrdRedisStatus(rocksdb::Status::kAborted, "Unexpected reply");
+}
+
+XrdRedisStatus XrdRedisConnection::received_null_reply() {
+  std::string err = SSTR("Context error when talking to " << ip << ":" << port << ": " << ctx->errstr);
+  return XrdRedisStatus(
+    rocksdb::Status::kAborted,
+    err
+  );
+}
+
+template <class ...Args>
+XrdRedisStatus XrdRedisTunnel::expect_ok(const std::string &cmd, const Args & ... args) {
+  RUN_COMMAND(reply, conn, pool, cmd, args);
+
+  if(reply->type == REDIS_REPLY_STATUS && strcmp(reply->str, "OK") == 0) {
+    return OK();
+  }
+  return conn->received_unexpected_reply(reply);
+}
+
+template <class ...Args>
+XrdRedisStatus XrdRedisTunnel::expect_str(std::string &value, const std::string &cmd, const Args & ... args) {
+  RUN_COMMAND(reply, conn, pool, cmd, args);
+
+  if(reply->type == REDIS_REPLY_STRING) {
+    value = std::string(reply->str, reply->len);
+    return OK();
+  }
+  else if(reply->type == REDIS_REPLY_NIL) {
+    return XrdRedisStatus(rocksdb::Status::kNotFound, "");
+  }
+
+  return conn->received_unexpected_reply(reply);
+}
+
+template <class IntegerType, class ...Args>
+XrdRedisStatus XrdRedisTunnel::expect_integer(IntegerType &value, const std::string &cmd, const Args & ... args) {
+  RUN_COMMAND(reply, conn, pool, cmd, args);
+
+  if(reply->type == REDIS_REPLY_INTEGER) {
+    value = (IntegerType) reply->integer;
+    return OK();
+  }
+  return conn->received_unexpected_reply(reply);
+}
+
+template <class ...Args>
+XrdRedisStatus XrdRedisTunnel::expect_list(std::vector<std::string> &vec, const std::string &cmd, const Args & ... args) {
+  RUN_COMMAND(reply, conn, pool, cmd, args);
+
+  if(reply->type == REDIS_REPLY_ARRAY) {
+    for(size_t i = 0; i < reply->elements; i++) {
+      if(reply->element[i]->type != REDIS_REPLY_STRING) return conn->received_unexpected_reply(reply);
+      vec.push_back(std::string(reply->element[i]->str, reply->element[i]->len));
+    }
+    return OK();
+  }
+  return conn->received_unexpected_reply(reply);
+}
+
+template <class ...Args>
+XrdRedisStatus XrdRedisTunnel::expect_pong(const std::string &cmd, const Args & ... args) {
+  RUN_COMMAND(reply, conn, pool, cmd, args);
+
+  if(reply->type == REDIS_REPLY_STATUS && strcmp(reply->str, "PONG") == 0) {
+    return OK();
+  }
+  return conn->received_unexpected_reply(reply);
+}
+
+template <class ...Args>
+XrdRedisStatus XrdRedisTunnel::expect_exists(const std::string &cmd, const Args & ... args) {
+  RUN_COMMAND(reply, conn, pool, cmd, args);
+
+  if(reply->type == REDIS_REPLY_INTEGER) {
+    if(reply->integer == 0) return XrdRedisStatus(rocksdb::Status::kNotFound, "");
+    if(reply->integer == 1) return OK();
+  }
+
+  return conn->received_unexpected_reply(reply);
+}
+
+XrdRedisTunnel::XrdRedisTunnel(const std::string &ip_, const int port_, size_t nconnections)
+: ip(ip_), port(port_), pool(ip_, port_, nconnections) {
+
 }
 
 XrdRedisTunnel::~XrdRedisTunnel() {
-  clearConnection();
 }
 
 XrdRedisStatus XrdRedisTunnel::set(const std::string &key, const std::string &value) {
-  LOCK_AND_CONNECT();
-  return expect_ok(forward("SET %b %b", key, value));
+  return expect_ok("SET", key, value);
 }
 
 XrdRedisStatus XrdRedisTunnel::get(const std::string &key, std::string &value) {
-  LOCK_AND_CONNECT();
-  return expect_str(forward("GET %b", key), value);
+  return expect_str(value, "GET", key);
 }
 
 XrdRedisStatus XrdRedisTunnel::exists(const std::string &key) {
-  LOCK_AND_CONNECT();
-  return expect_exists(forward("EXISTS %b", key));
+  return expect_exists("EXISTS", key);
 }
 
 XrdRedisStatus XrdRedisTunnel::del(const std::string &key) {
-  LOCK_AND_CONNECT();
-  return expect_ok(forward("DEL %b", key));
+  return expect_ok("DEL", key);
 }
 
 XrdRedisStatus XrdRedisTunnel::keys(const std::string &pattern, std::vector<std::string> &result) {
-  LOCK_AND_CONNECT();
-  return expect_list(forward("KEYS %b", pattern), result);
+  return expect_list(result, "KEYS", pattern);
 }
 
 XrdRedisStatus XrdRedisTunnel::sadd(const std::string &key, const std::string &element, int64_t &added) {
-  LOCK_AND_CONNECT();
-  return expect_int64(forward("SADD %b %b", key, element), added);
+  return expect_integer(added, "SADD", key, element);
 }
 
 XrdRedisStatus XrdRedisTunnel::sismember(const std::string &key, const std::string &element) {
-  LOCK_AND_CONNECT();
-  return expect_exists(forward("SISMEMBER %b %b", key, element));
+  return expect_exists("SISMEMBER", key, element);
 }
 
 XrdRedisStatus XrdRedisTunnel::srem(const std::string &key, const std::string &element) {
-  LOCK_AND_CONNECT();
-  return expect_exists(forward("SREM %b %b", key, element));
+  return expect_exists("SREM", key, element);
 }
 
 XrdRedisStatus XrdRedisTunnel::smembers(const std::string &key, std::vector<std::string> &members) {
-  LOCK_AND_CONNECT();
-  return expect_list(forward("SMEMBERS %b", key), members);
+  return expect_list(members, "SMEMBERS", key);
 }
 
 XrdRedisStatus XrdRedisTunnel::scard(const std::string &key, size_t &count) {
-  LOCK_AND_CONNECT();
-  return expect_size(forward("SCARD %b", key), count);
+  return expect_integer(count, "SCARD", key);
+}
+
+XrdRedisStatus XrdRedisTunnel::ping() {
+  return expect_pong("PING");
 }
 
 XrdRedisStatus XrdRedisTunnel::flushall() {
-  LOCK_AND_CONNECT();
-  return expect_ok(forward("FLUSHALL"));
+  return expect_ok("FLUSHALL");
 }
 
 XrdRedisStatus XrdRedisTunnel::hset(const std::string &key, const std::string &field, const std::string &value) {
-  LOCK_AND_CONNECT();
-  // TODO: change interface so both check and set are performed in this function, not redisProtocol!!!!!!
   int64_t tmp;
-  return expect_int64(forward("HSET %b %b %b", key, field, value), tmp);
+  return expect_integer(tmp, "HSET", key, field, value);
 }
 
 XrdRedisStatus XrdRedisTunnel::hget(const std::string &key, const std::string &field, std::string &value) {
-  LOCK_AND_CONNECT();
-  return expect_str(forward("HGET %b %b", key, field), value);
+  return expect_str(value, "HGET", key, field);
 }
 
 XrdRedisStatus XrdRedisTunnel::hexists(const std::string &key, const std::string &field) {
-  LOCK_AND_CONNECT();
-  return expect_exists(forward("HEXISTS %b %b", key, field));
+  return expect_exists("HEXISTS", key, field);
 }
 
 XrdRedisStatus XrdRedisTunnel::hkeys(const std::string &key, std::vector<std::string> &keys) {
-  LOCK_AND_CONNECT();
-  return expect_list(forward("HKEYS %b", key), keys);
+  return expect_list(keys, "HKEYS", key);
 }
 
 XrdRedisStatus XrdRedisTunnel::hgetall(const std::string &key, std::vector<std::string> &res) {
-  LOCK_AND_CONNECT();
-  return expect_list(forward("HGETALL %b", key), res);
+  return expect_list(res, "HGETALL", key);
 }
 
 XrdRedisStatus XrdRedisTunnel::hincrby(const std::string &key, const std::string &field, const std::string &incrby, int64_t &result) {
-  LOCK_AND_CONNECT();
-  return expect_int64(forward("HINCRBY %b %b %b", key, field, incrby), result);
+  return expect_integer(result, "HINCRBY", key, field, incrby);
 }
 
 XrdRedisStatus XrdRedisTunnel::hdel(const std::string &key, const std::string &field) {
-  LOCK_AND_CONNECT();
-  return expect_ok(forward("HDEL %b %b", key, field));
+  return expect_ok("HDEL", key, field);
 }
 
 XrdRedisStatus XrdRedisTunnel::hlen(const std::string &key, size_t &len) {
-  LOCK_AND_CONNECT();
-  return expect_size(forward("HLEN %b", key), len);
+  return expect_integer(len, "HLEN", key);
 }
 
 XrdRedisStatus XrdRedisTunnel::hvals(const std::string &key, std::vector<std::string> &vals) {
-  LOCK_AND_CONNECT();
-  return expect_list(forward("HVALS %b", key), vals);
-}
-
-// a variadic template function could be used, but needs crazy template metaprogramming
-// to juggle the c_str() and size() arguments.
-// It's probably simpler this way.
-redisReplyPtr XrdRedisTunnel::forward(const char *fmt) {
-  return redisCommandPtr(ctx, fmt);
-}
-
-redisReplyPtr XrdRedisTunnel::forward(const char *fmt, const std::string &s1) {
-  return redisCommandPtr(ctx, fmt, s1.c_str(), s1.size());
-}
-
-redisReplyPtr XrdRedisTunnel::forward(const char *fmt, const std::string &s1, const std::string &s2) {
-  return redisCommandPtr(ctx, fmt, s1.c_str(), s1.size(), s2.c_str(), s2.size());
-}
-
-redisReplyPtr XrdRedisTunnel::forward(const char *fmt, const std::string &s1, const std::string &s2, const std::string &s3) {
-  return redisCommandPtr(ctx, fmt, s1.c_str(), s1.size(), s2.c_str(), s2.size(), s3.c_str(), s3.size());
+  return expect_list(vals, "HVALS", key);
 }

@@ -24,6 +24,7 @@
 #include "XrdRedisSTL.hh"
 #include "XrdRedisRocksDB.hh"
 #include "XrdRedisTunnel.hh"
+#include "XrdRedisReplicator.hh"
 #include "XrdOuc/XrdOucEnv.hh"
 #include <stdlib.h>
 #include <algorithm>
@@ -370,7 +371,11 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
     case CMD_PING: {
       if(request.size() > 2) return SendErrArgs(command);
 
-      if(request.size() == 1) return SendPong();
+      if(request.size() == 1) {
+        XrdRedisStatus st = backend->ping();
+        if(st.ok()) return SendPong();
+        return SendErr(st);
+      }
       if(request.size() == 2) return SendString(request[1]);
     }
     case CMD_FLUSHALL: {
@@ -842,6 +847,9 @@ int XrdRedisProtocol::Configure(char *parms, XrdProtocol_Config * pi) {
     eDest.Emsg("Config", "unknown option for redis.primary, unable to continue");
     return 0;
   }
+
+  std::vector<XrdRedisBackend*> replicas;
+  backend = new XrdRedisReplicator(backend, replicas);
 
   return 1;
 }
