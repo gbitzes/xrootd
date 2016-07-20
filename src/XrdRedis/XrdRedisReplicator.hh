@@ -70,10 +70,10 @@ private:
     std::vector<std::string> arguments;
   };
 
-  XrdRedisStatus applyUpdate(ReplicaState &state, const JournalEntry &entry);
-
   ReplicaState primary;
   std::vector<ReplicaState> replicas;
+
+  // static XrdRedisStatus applyUpdate(ReplicaState &state, const JournalEntry &entry);
 };
 
 

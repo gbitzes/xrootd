@@ -50,7 +50,8 @@ if( ENABLE_REDIS )
     XrdRedis/XrdRedisProtocol.cc    XrdRedis/XrdRedisProtocol.hh
     XrdRedis/XrdRedisUtil.cc        XrdRedis/XrdRedisUtil.hh
     XrdRedis/XrdRedisTunnel.cc      XrdRedis/XrdRedisTunnel.hh
-    XrdRedis/XrdRedisReplicator.cc  XrdRedis/XrdRedisReplicator.hh)
+    XrdRedis/XrdRedisReplicator.cc  XrdRedis/XrdRedisReplicator.hh
+    XrdRedis/XrdRedisCommands.cc    XrdRedis/XrdRedisCommands.hh)
 
   target_link_libraries(
     ${LIB_XRD_REDIS}

@@ -19,6 +19,7 @@
 // along with XRootD.  If not, see <http://www.gnu.org/licenses/>.
 //------------------------------------------------------------------------------
 
+#include "XrdRedisCommands.hh"
 #include "XrdVersion.hh"
 #include "XrdRedisProtocol.hh"
 #include "XrdRedisSTL.hh"
@@ -48,67 +49,39 @@ std::string XrdRedisProtocol::tunnel;
 std::string XrdRedisProtocol::primary;
 int XrdRedisProtocol::readWait = 0;
 
-enum CmdType {
-  CMD_PING,
-  CMD_FLUSHALL,
 
-  CMD_GET,
-  CMD_SET,
-  CMD_EXISTS,
-  CMD_DEL,
-  CMD_KEYS,
-
-  CMD_HGET,
-  CMD_HSET,
-  CMD_HEXISTS,
-  CMD_HKEYS,
-  CMD_HGETALL,
-  CMD_HINCRBY,
-  CMD_HDEL,
-  CMD_HLEN,
-  CMD_HVALS,
-  CMD_HSCAN,
-
-  CMD_SADD,
-  CMD_SISMEMBER,
-  CMD_SREM,
-  CMD_SMEMBERS,
-  CMD_SCARD,
-  CMD_SSCAN
-};
-
-std::map<std::string, CmdType> cmdMap;
-
-struct cmdMapInit {
-  cmdMapInit() {
-    cmdMap["ping"] = CMD_PING;
-    cmdMap["flushall"] = CMD_FLUSHALL;
-
-    cmdMap["get"] = CMD_GET;
-    cmdMap["set"] = CMD_SET;
-    cmdMap["exists"] = CMD_EXISTS;
-    cmdMap["del"] = CMD_DEL;
-    cmdMap["keys"] = CMD_KEYS;
-
-    cmdMap["hget"] = CMD_HGET;
-    cmdMap["hset"] = CMD_HSET;
-    cmdMap["hexists"] = CMD_HEXISTS;
-    cmdMap["hkeys"] = CMD_HKEYS;
-    cmdMap["hgetall"] = CMD_HGETALL;
-    cmdMap["hincrby"] = CMD_HINCRBY;
-    cmdMap["hdel"] = CMD_HDEL;
-    cmdMap["hlen"] = CMD_HLEN;
-    cmdMap["hvals"] = CMD_HVALS;
-    cmdMap["hscan"] = CMD_HSCAN;
-
-    cmdMap["sadd"] = CMD_SADD;
-    cmdMap["sismember"] = CMD_SISMEMBER;
-    cmdMap["srem"] = CMD_SREM;
-    cmdMap["smembers"] = CMD_SMEMBERS;
-    cmdMap["scard"] = CMD_SCARD;
-    cmdMap["sscan"] = CMD_SSCAN;
-  }
-} cmdMapInit;
+// std::map<std::string, CmdType> cmdMap;
+//
+// struct cmdMapInit {
+//   cmdMapInit() {
+//     cmdMap["ping"] = CMD_PING;
+//     cmdMap["flushall"] = CMD_FLUSHALL;
+//
+//     cmdMap["get"] = CMD_GET;
+//     cmdMap["set"] = CMD_SET;
+//     cmdMap["exists"] = CMD_EXISTS;
+//     cmdMap["del"] = CMD_DEL;
+//     cmdMap["keys"] = CMD_KEYS;
+//
+//     cmdMap["hget"] = CMD_HGET;
+//     cmdMap["hset"] = CMD_HSET;
+//     cmdMap["hexists"] = CMD_HEXISTS;
+//     cmdMap["hkeys"] = CMD_HKEYS;
+//     cmdMap["hgetall"] = CMD_HGETALL;
+//     cmdMap["hincrby"] = CMD_HINCRBY;
+//     cmdMap["hdel"] = CMD_HDEL;
+//     cmdMap["hlen"] = CMD_HLEN;
+//     cmdMap["hvals"] = CMD_HVALS;
+//     cmdMap["hscan"] = CMD_HSCAN;
+//
+//     cmdMap["sadd"] = CMD_SADD;
+//     cmdMap["sismember"] = CMD_SISMEMBER;
+//     cmdMap["srem"] = CMD_SREM;
+//     cmdMap["smembers"] = CMD_SMEMBERS;
+//     cmdMap["scard"] = CMD_SCARD;
+//     cmdMap["sscan"] = CMD_SSCAN;
+//   }
+// } cmdMapInit;
 
 /******************************************************************************/
 /*            P r o t o c o l   M a n a g e m e n t   S t a c k s             */
@@ -359,16 +332,16 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
 
   std::string command = request[0];
   TRACEI(DEBUG, "in process request, command: '" << command << "'");
-  TRACEI(DEBUG, "cmdMap size: " << cmdMap.size());
-  std::map<std::string, CmdType>::iterator cmd = cmdMap.find(command);
+  TRACEI(DEBUG, "cmdMap size: " << redis_cmd_map.size());
+  std::map<std::string, XrdRedisCommand>::iterator cmd = redis_cmd_map.find(command);
 
 
-  if(cmd == cmdMap.end()) {
+  if(cmd == redis_cmd_map.end()) {
     return SendErr(SSTR("unknown command '" << request[0] << "'"));
   }
 
   switch(cmd->second) {
-    case CMD_PING: {
+    case XrdRedisCommand::PING: {
       if(request.size() > 2) return SendErrArgs(command);
 
       if(request.size() == 1) {
@@ -378,13 +351,13 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       }
       if(request.size() == 2) return SendString(request[1]);
     }
-    case CMD_FLUSHALL: {
+    case XrdRedisCommand::FLUSHALL: {
       if(request.size() != 1) return SendErrArgs(command);
       XrdRedisStatus st = backend->flushall();
       if(!st.ok()) return SendErr(st);
       return SendOK();
     }
-    case CMD_GET: {
+    case XrdRedisCommand::GET: {
       if(request.size() != 2) return SendErrArgs(command);
 
       std::string value;
@@ -393,14 +366,14 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       if(!st.ok()) return SendErr(st);
       return SendString(value);
     }
-    case CMD_SET: {
+    case XrdRedisCommand::SET: {
       if(request.size() != 3) return SendErrArgs(command);
 
       XrdRedisStatus st = backend->set(request[1], request[2]);
       if(!st.ok()) return SendErr(st);
       return SendOK();
     }
-    case CMD_EXISTS: {
+    case XrdRedisCommand::EXISTS: {
       if(request.size() <= 1) return SendErrArgs(command);
 
       int count = 0;
@@ -412,7 +385,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       }
       return SendNumber(count);
     }
-    case CMD_DEL: {
+    case XrdRedisCommand::DEL: {
       if(request.size() <= 1) return SendErrArgs(command);
 
       int count = 0;
@@ -423,7 +396,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       }
       return SendNumber(count);
     }
-    case CMD_KEYS: {
+    case XrdRedisCommand::KEYS: {
       if(request.size() != 2) return SendErrArgs(command);
 
       std::vector<std::string> ret;
@@ -431,7 +404,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       if(!st.ok()) return SendErr(st);
       return SendArray(ret);
     }
-    case CMD_HGET: {
+    case XrdRedisCommand::HGET: {
       if(request.size() != 3) return SendErrArgs(command);
 
       std::string value;
@@ -441,7 +414,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
 
       return SendString(value);
     }
-    case CMD_HSET: {
+    case XrdRedisCommand::HSET: {
       if(request.size() != 4) return SendErrArgs(command);
 
       // Mild race condition here.. if the key doesn't exist, but another thread modifies
@@ -456,10 +429,10 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       if(existed.ok()) return SendNumber(0);
       return SendNumber(1);
     }
-    case CMD_HEXISTS: {
+    case XrdRedisCommand::HEXISTS: {
       return SendErr("not implemented");
     }
-    case CMD_HKEYS: {
+    case XrdRedisCommand::HKEYS: {
       if(request.size() != 2) return SendErrArgs(command);
 
       std::vector<std::string> keys;
@@ -468,7 +441,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
 
       return SendArray(keys);
     }
-    case CMD_HGETALL: {
+    case XrdRedisCommand::HGETALL: {
       if(request.size() != 2) return SendErrArgs(command);
 
       std::vector<std::string> arr;
@@ -477,7 +450,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
 
       return SendArray(arr);
     }
-    case CMD_HINCRBY: {
+    case XrdRedisCommand::HINCRBY: {
       if(request.size() != 4) return SendErrArgs(command);
 
       int64_t ret = 0;
@@ -485,7 +458,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       if(!st.ok()) return SendErr(st);
       return SendNumber(ret);
     }
-    case CMD_HDEL: {
+    case XrdRedisCommand::HDEL: {
       if(request.size() <= 2) return SendErrArgs(command);
 
       int count = 0;
@@ -496,7 +469,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       }
       return SendNumber(count);
     }
-    case CMD_HLEN: {
+    case XrdRedisCommand::HLEN: {
       if(request.size() != 2) return SendErrArgs(command);
       size_t len;
       XrdRedisStatus st = backend->hlen(request[1], len);
@@ -504,13 +477,13 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
 
       return SendNumber(len);
     }
-    case CMD_HVALS: {
+    case XrdRedisCommand::HVALS: {
       if(request.size() != 2) return SendErrArgs(command);
       std::vector<std::string> vals;
       XrdRedisStatus st = backend->hvals(request[1], vals);
       return SendArray(vals);
     }
-    case CMD_HSCAN: {
+    case XrdRedisCommand::HSCAN: {
       if(request.size() != 3) return SendErrArgs(command);
       if(request[2] != "0") return SendErr("invalid cursor");
 
@@ -520,7 +493,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
 
       return SendScanResp("0", arr);
     }
-    case CMD_SADD: {
+    case XrdRedisCommand::SADD: {
       if(request.size() <= 2) return SendErrArgs(command);
 
       int64_t count = 0;
@@ -532,7 +505,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       }
       return SendNumber(count);
     }
-    case CMD_SISMEMBER: {
+    case XrdRedisCommand::SISMEMBER: {
       if(request.size() != 3) return SendErrArgs(command);
 
       XrdRedisStatus st = backend->sismember(request[1], request[2]);
@@ -540,7 +513,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       if(st.IsNotFound()) return SendNumber(0);
       return SendErr(st);
     }
-    case CMD_SREM: {
+    case XrdRedisCommand::SREM: {
       if(request.size() <= 2) return SendErrArgs(command);
 
       int count = 0;
@@ -551,21 +524,21 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       }
       return SendNumber(count);
     }
-    case CMD_SMEMBERS: {
+    case XrdRedisCommand::SMEMBERS: {
       if(request.size() != 2) return SendErrArgs(command);
       std::vector<std::string> members;
       XrdRedisStatus st = backend->smembers(request[1], members);
       if(!st.ok()) return SendErr(st);
       return SendArray(members);
     }
-    case CMD_SCARD: {
+    case XrdRedisCommand::SCARD: {
       if(request.size() != 2) return SendErrArgs(command);
       size_t count;
       XrdRedisStatus st = backend->scard(request[1], count);
       if(!st.ok()) return SendErr(st);
       return SendNumber(count);
     }
-    case CMD_SSCAN: {
+    case XrdRedisCommand::SSCAN: {
       if(request.size() != 3) return SendErrArgs(command);
       if(request[2] != "0") return SendErr("invalid cursor");
       std::vector<std::string> members;

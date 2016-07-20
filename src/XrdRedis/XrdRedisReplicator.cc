@@ -31,10 +31,14 @@ XrdRedisReplicator::XrdRedisReplicator(XrdRedisBackend *primary_, std::vector<Xr
 }
 
 XrdRedisReplicator::~XrdRedisReplicator() {
-
+  delete primary.backend;
+  for(auto item : replicas) {
+    delete item.backend;
+  }
 }
 
-// XrdRedisStatus applyUpdate(ReplicaState &state, const JournalEntry &entry) {
+// XrdRedisStatus XrdRedisReplicator::applyUpdate(ReplicaState &state, const JournalEntry &entry) {
+//   // if(entry.command ==)
 //
 //
 // }
@@ -84,6 +88,7 @@ XrdRedisStatus XrdRedisReplicator::hgetall(const std::string &key, std::vector<s
 }
 
 XrdRedisStatus XrdRedisReplicator::hincrby(const std::string &key, const std::string &field, const std::string &incrby, int64_t &result) {
+
   return primary.backend->hincrby(key, field, incrby, result);
 }
 

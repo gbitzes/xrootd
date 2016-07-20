@@ -56,6 +56,9 @@ public:
 
   XrdRedisConnectionPool(std::string _ip, int _port, size_t _size);
 private:
+  XrdRedisConnectionPool(const XrdRedisConnectionPool&) = delete;
+  XrdRedisConnectionPool& operator=(const XrdRedisConnectionPool&) = delete;
+
   XrdRedisQueue<XrdRedisConnection*> connections;
   XrdRedisConnection* create();
 
@@ -75,7 +78,7 @@ public:
 private:
   XrdRedisConnectionGrabber(const XrdRedisConnectionGrabber&) = delete;
   XrdRedisConnectionGrabber& operator=(const XrdRedisConnectionGrabber&) = delete;
-  
+
   XrdRedisConnectionPool &pool;
   XrdRedisConnection *conn;
 };
