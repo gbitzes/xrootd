@@ -96,15 +96,6 @@ static std::string translate_key(const RedisType type, const std::string &key, c
   return translated;
 }
 
-bool my_strtoll(const std::string &str, int64_t &ret) {
-  char *endptr = NULL;
-  ret = strtoll(str.c_str(), &endptr, 10);
-  if(endptr != str.c_str() + str.size() || ret == LLONG_MIN || ret == LONG_LONG_MAX) {
-    return false;
-  }
-  return true;
-}
-
 // merge operator for additions to provide atomic incrby
 class Int64AddOperator : public AssociativeMergeOperator {
 public:
@@ -352,18 +343,12 @@ XrdRedisStatus XrdRedisRocksDB::scard(const std::string &key, size_t &count) {
 
 XrdRedisStatus XrdRedisRocksDB::set(const std::string& key, const std::string& value) {
   std::string tkey = translate_key(kString, key);
-
-  rocksdb::Status st = db->Put(rocksdb::WriteOptions(), tkey, value);
-  if(!st.ok()) return status_convert(st);
-  return OK();
+  return status_convert(db->Put(rocksdb::WriteOptions(), tkey, value));
 }
 
 XrdRedisStatus XrdRedisRocksDB::get(const std::string &key, std::string &value) {
   std::string tkey = translate_key(kString, key);
-
-  rocksdb::Status st = db->Get(rocksdb::ReadOptions(), tkey, &value);
-  if(!st.ok()) return status_convert(st);
-  return OK();
+  return status_convert(db->Get(rocksdb::ReadOptions(), tkey, &value));
 }
 
 
