@@ -23,10 +23,84 @@
 #define __XRDREDIS_REPLICATOR_H__
 
 #include "XrdRedisBackend.hh"
+#include "XrdRedisQueue.hh"
+#include "XrdRedisUtil.hh"
+#include <future>
+#include <sstream>
 
 /******************************************************************************/
 /*                               D e f i n e s                                */
 /******************************************************************************/
+
+// template<class Backend>
+// class XrdRedisReplica : public Backend {
+// private:
+//   int64_t revision;
+//   bool online;
+// public:
+//   XrdRedisStatus getRevision(int64_t &rev);
+//   XrdRedisStatus setRevision(int64_t rev);
+//
+// };
+
+// class XrdRedisJournalEntry {
+//
+// }
+
+class XrdRedisJournal {
+private:
+  std::atomic<int64_t> revision;
+  XrdRedisBackend *store;
+public:
+  struct JournalEntry {
+    std::vector<std::string> items;
+
+    JournalEntry() {}
+
+    JournalEntry(const std::string &s1, const std::string &s2) {
+      items.emplace_back(s1);
+      items.emplace_back(s2);
+    }
+
+    std::string toString() const {
+      std::ostringstream ss;
+      ss << items[0];
+      for(size_t i = 1; i < items.size(); i++) {
+        ss << " " << items[i];
+      }
+      return ss.str();
+    }
+
+    void fromString(const std::string &str) {
+      items = split(str, " ");
+    }
+  };
+
+  XrdRedisStatus pushUpdate(const JournalEntry &entry, int64_t &revision);
+  XrdRedisStatus fetch(int64_t revision, JournalEntry &entry);
+
+  int64_t getRevision() {
+    return revision;
+  }
+
+  XrdRedisJournal(XrdRedisBackend *backend);
+  XrdRedisStatus initialize();
+};
+
+struct XrdRedisReplica {
+  XrdRedisReplica(XrdRedisBackend *_backend) {
+    cached_revision = -1;
+    online = false;
+    backend = _backend;
+  }
+
+  int64_t cached_revision;
+  bool online;
+  XrdRedisBackend *backend;
+
+  XrdRedisStatus getRevision(int64_t &revision);
+  XrdRedisStatus setRevision(int64_t revision);
+};
 
 class XrdRedisReplicator : public XrdRedisBackend {
 public:
@@ -58,20 +132,16 @@ public:
   XrdRedisReplicator(XrdRedisBackend *primary_, std::vector<XrdRedisBackend*> replicas_);
   ~XrdRedisReplicator();
 private:
-  struct ReplicaState {
-    int64_t revision;
-    XrdRedisBackend *backend;
-    bool online;
-  };
 
-  struct JournalEntry {
-    int64_t revision;
-    std::string command;
-    std::vector<std::string> arguments;
-  };
+  void taskExecutor();
+  XrdRedisStatus bringOnline(size_t nrep, bool resilver);
+  void monitorReplicas();
 
-  ReplicaState primary;
-  std::vector<ReplicaState> replicas;
+  XrdRedisReplica primary;
+  std::vector<XrdRedisReplica> replicas;
+  XrdRedisJournal journal;
+
+  XrdRedisQueue<std::packaged_task<XrdRedisStatus()>> work_queue;
 
   // static XrdRedisStatus applyUpdate(ReplicaState &state, const JournalEntry &entry);
 };

@@ -19,6 +19,9 @@
 // along with XRootD.  If not, see <http://www.gnu.org/licenses/>.
 //------------------------------------------------------------------------------
 
+#ifndef __XRDREDIS_QUEUE_H__
+#define __XRDREDIS_QUEUE_H__
+
 #include <queue>
 #include <mutex>
 #include <condition_variable>
@@ -30,7 +33,7 @@ public:
 
   void enqueue(T t) {
     std::lock_guard<std::mutex> lock(mutex);
-    queue.push(t);
+    queue.push(std::move(t));
     cond.notify_one();
   }
 
@@ -40,7 +43,7 @@ public:
     {
       cond.wait(lock);
     }
-    T val = queue.front();
+    T val = std::move(queue.front());
     queue.pop();
     return val;
   }
@@ -50,3 +53,5 @@ private:
   std::mutex mutex;
   std::condition_variable cond;
 };
+
+#endif

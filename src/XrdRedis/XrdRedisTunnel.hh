@@ -24,9 +24,11 @@
 
 #include "XrdRedisBackend.hh"
 #include "XrdRedisQueue.hh"
-#include <hiredis.h>
+#include <hiredis/hiredis.h>
+#include <hiredis/async.h>
 #include <mutex>
 #include <memory>
+#include <future>
 
 typedef std::shared_ptr<redisReply> redisReplyPtr;
 
@@ -35,18 +37,34 @@ public:
   XrdRedisConnection(std::string _ip, int _port);
   ~XrdRedisConnection();
 
+  void connect();
   XrdRedisStatus ensureConnected();
+  void ensureConnectedAsync();
+
   void clearConnection();
   redisContext* ctx;
+  redisAsyncContext* async;
 
   XrdRedisStatus received_unexpected_reply(const redisReplyPtr reply);
   XrdRedisStatus received_null_reply();
 
   template <class ...Args>
   redisReplyPtr execute(const Args & ... args);
+
+  template <class ...Args>
+  int executeAsync(redisCallbackFn *fn, void *data, const Args & ... args);
+
+  std::future<redisReplyPtr> executeAsyncFuture(XrdRedisRequest &req);
+
+  std::mutex async_mutex;
+
+  void eventLoop();
+  void notifyWrite();
+  void removeWriteNotification();
 private:
   std::string ip;
   int port;
+  int write_event_fd;
 };
 
 class XrdRedisConnectionPool {
@@ -111,6 +129,8 @@ public:
   XrdRedisStatus ping();
   XrdRedisStatus flushall();
 
+  std::future<redisReplyPtr> executeAsync(XrdRedisRequest &req);
+
   XrdRedisTunnel(const std::string &ip, const int port, size_t nconnections=10);
   ~XrdRedisTunnel();
 private:
@@ -118,6 +138,10 @@ private:
   int port;
 
   XrdRedisConnectionPool pool;
+  XrdRedisConnection my_conn;
+
+  template <class ...Args>
+  XrdRedisStatus executeAsync(redisCallbackFn *fn, const Args & ... args);
 
   template <class ...Args>
   XrdRedisStatus expect_list(std::vector<std::string> &vec, const std::string &cmd, const Args & ... args);

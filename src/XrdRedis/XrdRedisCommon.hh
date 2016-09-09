@@ -3,7 +3,7 @@
 //
 // Copyright (c) 2016 by European Organization for Nuclear Research (CERN)
 // Author: Georgios Bitzes <georgios.bitzes@cern.ch>
-// File Date: May 2016
+// File Date: August 2016
 //------------------------------------------------------------------------------
 // XRootD is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Lesser General Public License as published by
@@ -19,46 +19,30 @@
 // along with XRootD.  If not, see <http://www.gnu.org/licenses/>.
 //------------------------------------------------------------------------------
 
-#ifndef _XRDREDIS_UTIL_H
-#define _XRDREDIS_UTIL_H
+#ifndef __XRDREDIS_COMMON_H__
+#define __XRDREDIS_COMMON_H__
 
-#include <climits>
 #include <sstream>
 
 #define SSTR(message) static_cast<std::ostringstream&>(std::ostringstream().flush() << message).str()
 
-int XrdRedis_stringmatchlen(const char *pattern, int patternLen,
-        const char *string, int stringLen, int nocase);
+#include <cstdint>
+#include <vector>
+#include <memory>
 
-template<class T>
-inline std::string quotes(const T& val) {
-  return SSTR("'" << val << "'");
-}
+using RaftTerm = int64_t;
+using LogIndex = int64_t;
+using RaftClusterID = std::string;
+using RaftServerID = int64_t;
+using string_ptr  = std::shared_ptr<std::string>;
+using XrdRedisRequest = std::vector<string_ptr>;
 
-template<class T>
-inline std::string paren(const T& val) {
-  return SSTR("(" << val << ")");
-}
 
-inline bool my_strtoll(const std::string &str, int64_t &ret) {
-  char *endptr = NULL;
-  ret = strtoll(str.c_str(), &endptr, 10);
-  if(endptr != str.c_str() + str.size() || ret == LLONG_MIN || ret == LONG_LONG_MAX) {
-    return false;
-  }
-  return true;
-}
 
-inline std::vector<std::string> split(std::string data, std::string token) {
-    std::vector<std::string> output;
-    size_t pos = std::string::npos;
-    do {
-        pos = data.find(token);
-        output.push_back(data.substr(0, pos));
-        if(std::string::npos != pos)
-            data = data.substr(pos + token.size());
-    } while (std::string::npos != pos);
-    return output;
-}
+struct RaftServer {
+  std::string hostname;
+  int port;
+};
+
 
 #endif

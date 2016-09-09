@@ -40,10 +40,12 @@
 #include "XrdRedisTrace.hh"
 #include "XrdRedisBackend.hh"
 #include "XrdRedisRocksDB.hh"
+#include "XrdRedisRaft.hh"
 
 #include <sstream>
 #include <vector>
 #include <deque>
+#include <chrono>
 
 /******************************************************************************/
 /*                               D e f i n e s                                */
@@ -77,16 +79,25 @@ public:
 
   static XrdObjectQ<XrdRedisProtocol> ProtStack;
 private:
+  bool authorized_for_raft = false;
+  std::chrono::steady_clock::time_point last_raft_handshake;
+
   /// The link we are bound to
   XrdLink *Link;
 
   static XrdSysError           eDest;     // Error message handler
   int ReadLine();
 
-  std::vector<std::string> request;
+  std::chrono::steady_clock::time_point prev_process;
+
+  XrdRedisRequest request;
+  // std::vector<string_cptr> request2;
+  // std::vector<std::string> request;
   int request_size;
   int current_element;
   int element_size;
+
+  int nrequests;
 
   // buffer for ReadInteger
   std::string current_integer;
@@ -140,9 +151,17 @@ private:
 protected:
   static XrdBuffManager *BPool; // Buffer manager
   static XrdRedisBackend *backend;
+  static XrdRedisRaft *raft;
+
   static std::string dbpath;
+  static std::string replicas;
+  static std::string myself;
   static std::string primary;
   static std::string tunnel;
+  static RaftClusterID clusterID;
+
+  static std::chrono::steady_clock::time_point last_raft_config_update;
+  static std::vector<RaftServer> raftServers;
 
 
   static int readWait;

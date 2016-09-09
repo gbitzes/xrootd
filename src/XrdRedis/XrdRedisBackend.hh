@@ -26,6 +26,7 @@
 #include <vector>
 #include <rocksdb/status.h>
 #include <iostream>
+#include <memory>
 
 /******************************************************************************/
 /*                               D e f i n e s                                */
@@ -60,6 +61,10 @@ private:
   int code_;
   std::string error_;
 };
+
+// using string_cptr = std::shared_ptr<std::string const>;
+using string_ptr  = std::shared_ptr<std::string>;
+using XrdRedisRequest = std::vector<string_ptr>;
 
 // interface for a redis backend
 class XrdRedisBackend {

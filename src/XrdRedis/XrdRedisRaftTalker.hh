@@ -3,7 +3,7 @@
 //
 // Copyright (c) 2016 by European Organization for Nuclear Research (CERN)
 // Author: Georgios Bitzes <georgios.bitzes@cern.ch>
-// File Date: July 2016
+// File Date: September 2016
 //------------------------------------------------------------------------------
 // XRootD is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Lesser General Public License as published by
@@ -19,46 +19,26 @@
 // along with XRootD.  If not, see <http://www.gnu.org/licenses/>.
 //------------------------------------------------------------------------------
 
-#ifndef __XRDREDIS_COMMANDS_H__
-#define __XRDREDIS_COMMANDS_H__
+#ifndef __XRDREDIS_RAFT_TALKER_H__
+#define __XRDREDIS_RAFT_TALKER_H__
 
-#include <map>
+#include "XrdRedisTunnel.hh"
+#include "XrdRedisCommon.hh"
+#include <atomic>
+#include <future>
 
-enum class XrdRedisCommand {
-  PING,
-  FLUSHALL,
+class XrdRedisRaftTalker {
+public:
+  XrdRedisRaftTalker(const RaftServer &srv);
+  ~XrdRedisRaftTalker();
 
-  GET,
-  SET,
-  EXISTS,
-  DEL,
-  KEYS,
-
-  HGET,
-  HSET,
-  HEXISTS,
-  HKEYS,
-  HGETALL,
-  HINCRBY,
-  HDEL,
-  HLEN,
-  HVALS,
-  HSCAN,
-
-  SADD,
-  SISMEMBER,
-  SREM,
-  SMEMBERS,
-  SCARD,
-  SSCAN,
-
-  RAFT_HANDSHAKE,
-  RAFT_APPEND_ENTRY,
-  RAFT_INFO,
-  RAFT_RECONFIGURE,
-  RAFT_REQUEST_VOTE
+  std::future<redisReplyPtr> sendHandshake(RaftClusterID id);
+  std::future<redisReplyPtr> sendHeartbeat(RaftTerm term, RaftServerID leaderId, LogIndex prevIndex,
+                                         RaftTerm prevTerm, LogIndex commit);
+  std::future<redisReplyPtr> sendRequestVote(RaftTerm term, int64_t candidateId, LogIndex lastIndex, RaftTerm lastTerm);
+private:
+  RaftServer target;
+  XrdRedisTunnel tunnel;
 };
-
-extern std::map<std::string, XrdRedisCommand> redis_cmd_map;
 
 #endif

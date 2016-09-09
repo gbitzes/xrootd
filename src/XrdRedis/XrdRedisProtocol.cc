@@ -44,44 +44,16 @@ XrdOucTrace *XrdRedisTrace = 0;
 
 XrdBuffManager *XrdRedisProtocol::BPool = 0; // Buffer manager
 XrdRedisBackend *XrdRedisProtocol::backend = 0;
+XrdRedisRaft *XrdRedisProtocol::raft = 0;
 std::string XrdRedisProtocol::dbpath;
+std::string XrdRedisProtocol::myself;
+std::string XrdRedisProtocol::replicas;
 std::string XrdRedisProtocol::tunnel;
 std::string XrdRedisProtocol::primary;
+RaftClusterID XrdRedisProtocol::clusterID;
+std::chrono::steady_clock::time_point XrdRedisProtocol::last_raft_config_update;
+std::vector<RaftServer> XrdRedisProtocol::raftServers;
 int XrdRedisProtocol::readWait = 0;
-
-
-// std::map<std::string, CmdType> cmdMap;
-//
-// struct cmdMapInit {
-//   cmdMapInit() {
-//     cmdMap["ping"] = CMD_PING;
-//     cmdMap["flushall"] = CMD_FLUSHALL;
-//
-//     cmdMap["get"] = CMD_GET;
-//     cmdMap["set"] = CMD_SET;
-//     cmdMap["exists"] = CMD_EXISTS;
-//     cmdMap["del"] = CMD_DEL;
-//     cmdMap["keys"] = CMD_KEYS;
-//
-//     cmdMap["hget"] = CMD_HGET;
-//     cmdMap["hset"] = CMD_HSET;
-//     cmdMap["hexists"] = CMD_HEXISTS;
-//     cmdMap["hkeys"] = CMD_HKEYS;
-//     cmdMap["hgetall"] = CMD_HGETALL;
-//     cmdMap["hincrby"] = CMD_HINCRBY;
-//     cmdMap["hdel"] = CMD_HDEL;
-//     cmdMap["hlen"] = CMD_HLEN;
-//     cmdMap["hvals"] = CMD_HVALS;
-//     cmdMap["hscan"] = CMD_HSCAN;
-//
-//     cmdMap["sadd"] = CMD_SADD;
-//     cmdMap["sismember"] = CMD_SISMEMBER;
-//     cmdMap["srem"] = CMD_SREM;
-//     cmdMap["smembers"] = CMD_SMEMBERS;
-//     cmdMap["scard"] = CMD_SCARD;
-//     cmdMap["sscan"] = CMD_SSCAN;
-//   }
-// } cmdMapInit;
 
 /******************************************************************************/
 /*            P r o t o c o l   M a n a g e m e n t   S t a c k s             */
@@ -100,9 +72,9 @@ XrdRedisProtocol::ProtStack("ProtStack",
 
 XrdRedisProtocol::XrdRedisProtocol()
 : XrdProtocol("Redis protocol handler") {
-
   request_size = 0;
   element_size = 0;
+  nrequests = 0;
 
   Reset();
 }
@@ -120,29 +92,48 @@ XrdProtocol* XrdRedisProtocol::Match(XrdLink *lp) {
   return rp;
 }
 
+static std::atomic<int> slow(0);
+
 #define TRACELINK lp
 int XrdRedisProtocol::Process(XrdLink *lp) {
+  auto now = std::chrono::steady_clock::now();
+  std::chrono::duration<double> diff = now - prev_process;
   TRACEI(DEBUG, " Process. lp:" << lp);
 
   if(buffers.size() == 0 || !buffers[0]->buff || !buffers[0]->bsize) {
-    TRACE(ALL, " Process. No buffer available. Internal error.");
+    TRACE(EMSG, " Process. No buffer available. Internal error.");
     return -1;
   }
 
+  // std::cout << "Process was called." << std::endl;
+  int reqs = 0;
+
   while(true) {
+    auto start = std::chrono::steady_clock::now();
     int rc = ReadRequest(lp);
 
-    if(rc == 0) return 1;
+    if(rc == 0) {
+      // std::cout << "serviced " << reqs << " requests within one scheduling" << std::endl;
+      prev_process = std::chrono::steady_clock::now();
+      return 1;
+    }
     if(rc < 0) return rc;
 
     request_size = 0;
 
     rc = ProcessRequest(lp);
     request.clear();
+
+    auto end = std::chrono::steady_clock::now();
+    std::chrono::duration<double> diff = end-start;
+    if(diff.count() > 0.01) {
+      std::cout << "Request took " << diff.count() << "s. Slow requests so far: " << slow << "\n";
+      slow++;
+    }
+
+    reqs++;
+    nrequests++;
   }
-
-
-  // return rc;
 }
 
 int XrdRedisProtocol::ReadRequest(XrdLink *lp) {
@@ -168,7 +159,16 @@ int XrdRedisProtocol::ReadRequest(XrdLink *lp) {
     int rc = ReadElement(lp, str);
     if(rc <= 0) return rc;
 
-    request.push_back(str);
+    // request.push_back(str);
+    request.emplace_back(new std::string(std::move(str)));
+
+    // string_ptr a = std::make_shared<std::string>(std::move(str));
+    // a.assign() std::make_shared(str));
+    // request2.push_back(std::make_shared(str));
+    // request2.emplace_back(std::move(str));
+    // request2.push_back(std::make_shared(str));
+    // request.push_back(std::move(str));
+    // request2.push_back(&str);
     element_size = 0;
   }
 
@@ -193,12 +193,12 @@ int XrdRedisProtocol::ReadString(XrdLink *lp, int nbytes, std::string &str) {
   TRACEI(DEBUG, "ReadString: consume returned string with size " << str.size() << "'" << str << "'");
 
   if(str[str.size()-2] != '\r') {
-    TRACEI(ALL, "Protocol error, expected \\r, received " << str[str.size()-2]);
+    TRACEI(EMSG, "Protocol error, expected \\r, received " << str[str.size()-2]);
     return -1;
   }
 
   if(str[str.size()-1] != '\n') {
-    TRACEI(ALL, "Protocol error, expected \\n, received " << str[str.size()-1]);
+    TRACEI(EMSG, "Protocol error, expected \\n, received " << str[str.size()-1]);
     return -1;
   }
 
@@ -304,12 +304,12 @@ int XrdRedisProtocol::ReadInteger(XrdLink *lp, char prefix) {
   }
 
   if(current_integer[current_integer.size()-2] != '\r') {
-    TRACEI(ALL, "Protocol error, received \\n without preceeding \\r");
+    TRACEI(EMSG, "Protocol error, received \\n without preceeding \\r");
     return -1;
   }
 
   if(current_integer[0] != prefix) {
-    TRACEI(ALL, "Protocol error, expected an integer with preceeding '" << prefix << "', received '" << current_integer[0] << "' instead");
+    TRACEI(EMSG, "Protocol error, expected an integer with preceeding '" << prefix << "', received '" << current_integer[0] << "' instead");
     return -1;
   }
 
@@ -328,16 +328,23 @@ int XrdRedisProtocol::ReadInteger(XrdLink *lp, char prefix) {
 
 int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
   // to lower
-  std::transform(request[0].begin(), request[0].end(), request[0].begin(), ::tolower);
+  std::transform(request[0]->begin(), request[0]->end(), request[0]->begin(), ::tolower);
 
-  std::string command = request[0];
+  std::string command = *request[0];
   TRACEI(DEBUG, "in process request, command: '" << command << "'");
   TRACEI(DEBUG, "cmdMap size: " << redis_cmd_map.size());
   std::map<std::string, XrdRedisCommand>::iterator cmd = redis_cmd_map.find(command);
 
 
   if(cmd == redis_cmd_map.end()) {
-    return SendErr(SSTR("unknown command '" << request[0] << "'"));
+    return SendErr(SSTR("unknown command '" << *request[0] << "'"));
+  }
+
+  // this will happen if a different connection pushed an update to the raft configuration
+  // It enforces that any raft machines talking to each other always have a consistent view
+  // of who is participating in the cluster
+  if(last_raft_handshake < last_raft_config_update) {
+    authorized_for_raft = false;
   }
 
   switch(cmd->second) {
@@ -349,7 +356,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
         if(st.ok()) return SendPong();
         return SendErr(st);
       }
-      if(request.size() == 2) return SendString(request[1]);
+      if(request.size() == 2) return SendString(*request[1]);
     }
     case XrdRedisCommand::FLUSHALL: {
       if(request.size() != 1) return SendErrArgs(command);
@@ -361,7 +368,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       if(request.size() != 2) return SendErrArgs(command);
 
       std::string value;
-      XrdRedisStatus st = backend->get(request[1], value);
+      XrdRedisStatus st = backend->get(*request[1], value);
       if(st.IsNotFound()) return SendNull();
       if(!st.ok()) return SendErr(st);
       return SendString(value);
@@ -369,7 +376,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
     case XrdRedisCommand::SET: {
       if(request.size() != 3) return SendErrArgs(command);
 
-      XrdRedisStatus st = backend->set(request[1], request[2]);
+      XrdRedisStatus st = backend->set(*request[1], *request[2]);
       if(!st.ok()) return SendErr(st);
       return SendOK();
     }
@@ -378,7 +385,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
 
       int count = 0;
       for(unsigned i = 1; i < request.size(); i++) {
-        XrdRedisStatus st = backend->exists(request[i]);
+        XrdRedisStatus st = backend->exists(*request[i]);
         if(st.ok()) count++;
         else if(!st.IsNotFound()) SendErr(st);
 
@@ -390,7 +397,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
 
       int count = 0;
       for(unsigned i = 1; i < request.size(); i++) {
-        XrdRedisStatus st = backend->del(request[i]);
+        XrdRedisStatus st = backend->del(*request[i]);
         if(st.ok()) count++;
         else if(!st.IsNotFound()) return SendErr(st);
       }
@@ -400,7 +407,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       if(request.size() != 2) return SendErrArgs(command);
 
       std::vector<std::string> ret;
-      XrdRedisStatus st = backend->keys(request[1], ret);
+      XrdRedisStatus st = backend->keys(*request[1], ret);
       if(!st.ok()) return SendErr(st);
       return SendArray(ret);
     }
@@ -408,7 +415,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       if(request.size() != 3) return SendErrArgs(command);
 
       std::string value;
-      XrdRedisStatus st = backend->hget(request[1], request[2], value);
+      XrdRedisStatus st = backend->hget(*request[1], *request[2], value);
       if(st.IsNotFound()) SendNull();
       else if(!st.ok()) return SendErr(st);
 
@@ -420,10 +427,10 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       // Mild race condition here.. if the key doesn't exist, but another thread modifies
       // it in the meantime the user gets a response of 1, not 0
 
-      XrdRedisStatus existed = backend->hexists(request[1], request[2]);
+      XrdRedisStatus existed = backend->hexists(*request[1], *request[2]);
       if(!existed.ok() && !existed.IsNotFound()) return SendErr(existed);
 
-      XrdRedisStatus st = backend->hset(request[1], request[2], request[3]);
+      XrdRedisStatus st = backend->hset(*request[1], *request[2], *request[3]);
       if(!st.ok()) return SendErr(st);
 
       if(existed.ok()) return SendNumber(0);
@@ -436,7 +443,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       if(request.size() != 2) return SendErrArgs(command);
 
       std::vector<std::string> keys;
-      XrdRedisStatus st = backend->hkeys(request[1], keys);
+      XrdRedisStatus st = backend->hkeys(*request[1], keys);
       if(!st.ok()) return SendErr(st);
 
       return SendArray(keys);
@@ -445,7 +452,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       if(request.size() != 2) return SendErrArgs(command);
 
       std::vector<std::string> arr;
-      XrdRedisStatus st = backend->hgetall(request[1], arr);
+      XrdRedisStatus st = backend->hgetall(*request[1], arr);
       if(!st.ok()) return SendErr(st);
 
       return SendArray(arr);
@@ -454,7 +461,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       if(request.size() != 4) return SendErrArgs(command);
 
       int64_t ret = 0;
-      XrdRedisStatus st = backend->hincrby(request[1], request[2], request[3], ret);
+      XrdRedisStatus st = backend->hincrby(*request[1], *request[2], *request[3], ret);
       if(!st.ok()) return SendErr(st);
       return SendNumber(ret);
     }
@@ -463,7 +470,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
 
       int count = 0;
       for(unsigned i = 2; i < request.size(); i++) {
-        XrdRedisStatus st = backend->hdel(request[1], request[i]);
+        XrdRedisStatus st = backend->hdel(*request[1], *request[i]);
         if(st.ok()) count++;
         else if(!st.IsNotFound()) return SendErr(st);
       }
@@ -472,7 +479,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
     case XrdRedisCommand::HLEN: {
       if(request.size() != 2) return SendErrArgs(command);
       size_t len;
-      XrdRedisStatus st = backend->hlen(request[1], len);
+      XrdRedisStatus st = backend->hlen(*request[1], len);
       if(!st.ok()) return SendErr(st);
 
       return SendNumber(len);
@@ -480,15 +487,15 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
     case XrdRedisCommand::HVALS: {
       if(request.size() != 2) return SendErrArgs(command);
       std::vector<std::string> vals;
-      XrdRedisStatus st = backend->hvals(request[1], vals);
+      XrdRedisStatus st = backend->hvals(*request[1], vals);
       return SendArray(vals);
     }
     case XrdRedisCommand::HSCAN: {
       if(request.size() != 3) return SendErrArgs(command);
-      if(request[2] != "0") return SendErr("invalid cursor");
+      if(*request[2] != "0") return SendErr("invalid cursor");
 
       std::vector<std::string> arr;
-      XrdRedisStatus st = backend->hgetall(request[1], arr);
+      XrdRedisStatus st = backend->hgetall(*request[1], arr);
       if(!st.ok()) return SendErr(st);
 
       return SendScanResp("0", arr);
@@ -499,7 +506,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       int64_t count = 0;
       for(unsigned i = 2; i < request.size(); i++) {
         int64_t tmp = 0;
-        XrdRedisStatus st = backend->sadd(request[1], request[i], tmp);
+        XrdRedisStatus st = backend->sadd(*request[1], *request[i], tmp);
         if(!st.ok()) return SendErr(st);
         count += tmp;
       }
@@ -508,7 +515,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
     case XrdRedisCommand::SISMEMBER: {
       if(request.size() != 3) return SendErrArgs(command);
 
-      XrdRedisStatus st = backend->sismember(request[1], request[2]);
+      XrdRedisStatus st = backend->sismember(*request[1], *request[2]);
       if(st.ok()) return SendNumber(1);
       if(st.IsNotFound()) return SendNumber(0);
       return SendErr(st);
@@ -518,7 +525,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
 
       int count = 0;
       for(unsigned i = 2; i < request.size(); i++) {
-        XrdRedisStatus st = backend->srem(request[1], request[i]);
+        XrdRedisStatus st = backend->srem(*request[1], *request[i]);
         if(st.ok()) count++;
         else if(!st.IsNotFound()) return SendErr(st);
       }
@@ -527,24 +534,91 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
     case XrdRedisCommand::SMEMBERS: {
       if(request.size() != 2) return SendErrArgs(command);
       std::vector<std::string> members;
-      XrdRedisStatus st = backend->smembers(request[1], members);
+      XrdRedisStatus st = backend->smembers(*request[1], members);
       if(!st.ok()) return SendErr(st);
       return SendArray(members);
     }
     case XrdRedisCommand::SCARD: {
       if(request.size() != 2) return SendErrArgs(command);
       size_t count;
-      XrdRedisStatus st = backend->scard(request[1], count);
+      XrdRedisStatus st = backend->scard(*request[1], count);
       if(!st.ok()) return SendErr(st);
       return SendNumber(count);
     }
     case XrdRedisCommand::SSCAN: {
       if(request.size() != 3) return SendErrArgs(command);
-      if(request[2] != "0") return SendErr("invalid cursor");
+      if(*request[2] != "0") return SendErr("invalid cursor");
       std::vector<std::string> members;
-      XrdRedisStatus st = backend->smembers(request[1], members);
+      XrdRedisStatus st = backend->smembers(*request[1], members);
       if(!st.ok()) return SendErr(st);
       return SendScanResp("0", members);
+    }
+    case XrdRedisCommand::RAFT_HANDSHAKE: {
+      authorized_for_raft = false;
+
+      if(request.size() != 2) return SendErrArgs(command);
+
+      if(*request[1] != raft->getClusterID()) return SendErr(SSTR("wrong cluster id"));
+      authorized_for_raft = true;
+      return SendOK();
+    }
+    case XrdRedisCommand::RAFT_APPEND_ENTRY: {
+      if(!authorized_for_raft) return SendErr("not authorized to issue raft commands");
+      if(request.size() < 7) return SendErrArgs(command);
+
+      RaftTerm term;
+      my_strtoll(*request[1], term);
+
+      RaftServerID server;
+      my_strtoll(*request[2], server);
+
+      LogIndex prevlog;
+      my_strtoll(*request[3], prevlog);
+
+      RaftTerm prevterm;
+      my_strtoll(*request[4], prevterm);
+
+      LogIndex leaderCommit;
+      my_strtoll(*request[5], leaderCommit);
+
+      XrdRedisRequest req;
+      for(size_t i = 6; i < request.size(); i++) {
+        req.push_back(request[i]);
+      }
+
+      return SendArray(raft->appendEntries(term, server, prevlog, prevterm, req, leaderCommit));
+    }
+    case XrdRedisCommand::RAFT_REQUEST_VOTE: {
+      if(!authorized_for_raft) return SendErr("not authorized to issue raft commands");
+      if(request.size() != 5) return SendErrArgs(command);
+
+      RaftTerm term;
+      my_strtoll(*request[1], term);
+
+      RaftServerID candId;
+      my_strtoll(*request[2], candId);
+
+      LogIndex lastLogIndex;
+      my_strtoll(*request[3], lastLogIndex);
+
+      RaftTerm lastLogTerm;
+      my_strtoll(*request[4], lastLogTerm);
+
+      return SendArray(raft->requestVote(term, candId, lastLogIndex, lastLogTerm));
+    }
+    case XrdRedisCommand::RAFT_INFO: {
+      if(request.size() != 1) return SendErrArgs(command);
+      return SendArray(raft->info());
+    }
+    case XrdRedisCommand::RAFT_RECONFIGURE: {
+      // don't check if authorized for raft, this is intentional. This is why we also supply
+      // the cluster ID
+      if(request.size() != 3) return SendErrArgs(command);
+
+      if(*request[1] != raft->getClusterID()) return SendErr("wrong cluster id");
+
+      // parse request[2]
+
     }
     default: {
       return SendErr("an unknown error occurred when dispatching the command");
@@ -716,6 +790,9 @@ int XrdRedisProtocol::Config(const char *ConfigFN) {
            else if FETCH("primary", primary);
            else if FETCH("tunnel", tunnel);
            else if FETCH("db", dbpath);
+           else if FETCH("replicas", replicas);
+           else if FETCH("myself", myself);
+           else if FETCH("cluster_id", clusterID);
       else {
         eDest.Say("Config warning: ignoring unknown directive '", var, "'.");
         Config.Echo();
@@ -740,16 +817,28 @@ int XrdRedisProtocol::fetch_config(XrdOucStream &Config, const std::string &msg,
   return 0;
 }
 
-static std::vector<std::string> split(std::string data, std::string token) {
-    std::vector<std::string> output;
-    size_t pos = std::string::npos;
-    do {
-        pos = data.find(token);
-        output.push_back(data.substr(0, pos));
-        if(std::string::npos != pos)
-            data = data.substr(pos + token.size());
-    } while (std::string::npos != pos);
-    return output;
+bool parseServer(const std::string &str, RaftServer &srv) {
+  std::vector<std::string> parts = split(str, ":");
+
+  if(parts.size() != 2) return false;
+
+  int64_t port;
+  if(!my_strtoll(parts[1], port)) return false;
+
+  srv = RaftServer{ parts[0], (int) port };
+  return true;
+}
+
+bool parseServers(const std::string &str, std::vector<RaftServer> &servers) {
+  std::vector<std::string> parts = split(str, ",");
+
+  for(size_t i = 0; i < parts.size(); i++) {
+    RaftServer srv;
+    if(!parseServer(parts[i], srv)) return false;
+    servers.push_back(srv);
+  }
+
+  return true;
 }
 
 int XrdRedisProtocol::Configure(char *parms, XrdProtocol_Config * pi) {
@@ -790,7 +879,6 @@ int XrdRedisProtocol::Configure(char *parms, XrdProtocol_Config * pi) {
       eDest.Emsg("Config", SSTR("error while opening the db: " << st.ToString()).c_str());
       return 0;
     }
-
     backend = rocksdb;
   }
   else if(primary == "tunnel") {
@@ -816,14 +904,100 @@ int XrdRedisProtocol::Configure(char *parms, XrdProtocol_Config * pi) {
 
     backend = new XrdRedisTunnel(ip, port);
   }
+  else if(primary == "raft") {
+    if(dbpath.empty()) {
+      eDest.Emsg("Config", "redis.dbpath required when the primary datastore is rocksdb");
+      return 0;
+    }
+
+    XrdRedisRocksDB *rocksdb = new XrdRedisRocksDB();
+    XrdRedisStatus st = rocksdb->initialize(dbpath);
+    if(!st.ok()) {
+      eDest.Emsg("Config", SSTR("error while opening the db: " << st.ToString()).c_str());
+      return 0;
+    }
+
+    if(replicas.empty()) {
+      eDest.Emsg("Config", "redis.replicas required with raft");
+      return 0;
+    }
+
+    if(myself.empty()) {
+      eDest.Emsg("Config", "redis.myself required with raft");
+      return 0;
+    }
+
+    if(clusterID.empty()) {
+      eDest.Emsg("Config", "redis.cluster_id required with raft");
+      return 0;
+    }
+
+    RaftServer myselfSrv;
+    if(!parseServer(myself, myselfSrv)) {
+      eDest.Emsg("Config", "malformed redis.myself");
+      return 0;
+    }
+
+    raftServers.clear();
+    if(!parseServers(replicas, raftServers)) {
+      eDest.Emsg("Config", "malformed redis.replicas");
+      return 0;
+    }
+
+    try {
+      raft = new XrdRedisRaft(rocksdb, rocksdb, clusterID, myselfSrv);
+      XrdRedisStatus st = raft->configureParticipants(raftServers);
+      if(!st.ok()) throw st;
+    } catch(XrdRedisStatus &st) {
+      std::cout << st.ToString() << std::endl;
+    }
+    backend = rocksdb;
+  }
+  // else if(primary == "replicator") {
+  //   if(dbpath.empty()) {
+  //     eDest.Emsg("Config", "redis.dbpath required when the primary datastore is rocksdb");
+  //     return 0;
+  //   }
+  //
+  //   XrdRedisRocksDB *rocksdb = new XrdRedisRocksDB();
+  //   XrdRedisStatus st = rocksdb->initialize(dbpath);
+  //   if(!st.ok()) {
+  //     eDest.Emsg("Config", SSTR("error while opening the db: " << st.ToString()).c_str());
+  //     return 0;
+  //   }
+  //
+  //   if(replicas.empty()) {
+  //     eDest.Emsg("Config", "redis.replicas required with a replicator");
+  //     return 0;
+  //   }
+  //
+  //   std::vector<std::string> reps = split(replicas, ",");
+  //   std::vector<XrdRedisBackend*> replicaBackends;
+  //   for(size_t i = 0; i < reps.size(); i++) {
+  //     std::vector<std::string> replica = split(reps[i], ":");
+  //
+  //     if(replica.size() != 2) {
+  //       eDest.Emsg("Config", "malformed redis.replicas");
+  //       return 0;
+  //     }
+  //
+  //     int64_t port;
+  //     if(!my_strtoll(replica[1], port)) {
+  //       eDest.Emsg("Config", "malformed redis.replicas");
+  //       return 0;
+  //     }
+  //
+  //     replicaBackends.push_back(new XrdRedisTunnel(replica[0], port));
+  //   }
+  //
+  //   backend = new XrdRedisReplicator(rocksdb, replicaBackends);
+  // }
   else {
     eDest.Emsg("Config", "unknown option for redis.primary, unable to continue");
     return 0;
   }
 
-  std::vector<XrdRedisBackend*> replicas;
-  backend = new XrdRedisReplicator(backend, replicas);
-
+  // frontend = new XrdRedisDirectFrontend(backend);
   return 1;
 }
 

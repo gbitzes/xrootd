@@ -20,6 +20,7 @@ include( XRootDDefaults )
 include( XRootDSystemCheck )
 include( XRootDFindLibs )
 
+add_definitions(-ggdb)
 add_definitions( -DXRDPLUGIN_SOVERSION="${PLUGIN_VERSION}" )
 
 #-------------------------------------------------------------------------------

@@ -143,6 +143,10 @@ XrdRedisStatus XrdRedisRocksDB::initialize(const std::string &filename) {
   rocksdb::Options options;
   options.merge_operator.reset(new Int64AddOperator);
   options.create_if_missing = true;
+  options.write_buffer_size = 1024 * 1024 * 1024;
+  options.max_write_buffer_number = 5;
+  options.min_write_buffer_number_to_merge = 2;
+  // options.max_background_compactions = 3;
   rocksdb::Status status = rocksdb::DB::Open(options, filename, &db);
   return status_convert(status);
 }
