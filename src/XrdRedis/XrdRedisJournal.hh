@@ -45,6 +45,7 @@ private:
   RaftServerID votedFor = -1;
 
   LogIndex logSize = -1;
+  RaftTerm termOfLastEntry = -1;
 
   RaftClusterID clusterID = "uninitialized";
 
@@ -81,6 +82,10 @@ public:
     return logSize;
   }
 
+  RaftTerm getTermOfLastEntry() {
+    return termOfLastEntry;
+  }
+
   RaftClusterID getClusterID() {
     return clusterID;
   }
@@ -91,16 +96,16 @@ public:
 
   bool entryExists(RaftTerm term, LogIndex revision);
 
-  XrdRedisStatus append(RaftTerm prevTerm, LogIndex prevIndex, XrdRedisRequest &cmd);
+  XrdRedisStatus append(RaftTerm prevTerm, LogIndex prevIndex, XrdRedisRequest &cmd, RaftTerm entryTerm);
   bool requestVote(RaftTerm term, int64_t candidateId, LogIndex lastIndex, RaftTerm lastTerm);
 
-
+  XrdRedisStatus fetch(LogIndex index, RaftTerm &term, XrdRedisRequest &cmd);
+  std::pair<LogIndex, RaftTerm> leaderAppend(XrdRedisRequest &req);
 
   // XrdRedisStatus create(const std::string &filename);
   // XrdRedisStatus initialize(const std::string &filename);
 
   // XrdRedisStatus append(XrdRedisRequest& cmd, RaftTerm term, LogIndex revision);
-  // XrdRedisStatus fetch(LogIndex revision, XrdRedisRequest &cmd, RaftTerm &term);
 };
 
 // private:

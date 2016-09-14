@@ -45,16 +45,17 @@ if( ENABLE_REDIS )
     ${LIB_XRD_REDIS}
     MODULE
     XrdRedis/XrdRedisPlugin.cc
-    XrdRedis/XrdRedisSTL.cc            XrdRedis/XrdRedisSTL.hh
-    XrdRedis/XrdRedisRocksDB.cc        XrdRedis/XrdRedisRocksDB.hh
-    XrdRedis/XrdRedisProtocol.cc       XrdRedis/XrdRedisProtocol.hh
-    XrdRedis/XrdRedisUtil.cc           XrdRedis/XrdRedisUtil.hh
-    XrdRedis/XrdRedisTunnel.cc         XrdRedis/XrdRedisTunnel.hh
-    XrdRedis/XrdRedisReplicator.cc     XrdRedis/XrdRedisReplicator.hh
-    XrdRedis/XrdRedisCommands.cc       XrdRedis/XrdRedisCommands.hh
-    XrdRedis/XrdRedisRaft.cc           XrdRedis/XrdRedisRaft.hh
-    XrdRedis/XrdRedisJournal.cc        XrdRedis/XrdRedisJournal.hh
-    XrdRedis/XrdRedisRaftTalker.cc     XrdRedis/XrdRedisRaftTalker.hh)
+    XrdRedis/XrdRedisSTL.cc             XrdRedis/XrdRedisSTL.hh
+    XrdRedis/XrdRedisRocksDB.cc         XrdRedis/XrdRedisRocksDB.hh
+    XrdRedis/XrdRedisProtocol.cc        XrdRedis/XrdRedisProtocol.hh
+    XrdRedis/XrdRedisUtil.cc            XrdRedis/XrdRedisUtil.hh
+    XrdRedis/XrdRedisTunnel.cc          XrdRedis/XrdRedisTunnel.hh
+    XrdRedis/XrdRedisReplicator.cc      XrdRedis/XrdRedisReplicator.hh
+    XrdRedis/XrdRedisCommands.cc        XrdRedis/XrdRedisCommands.hh
+    XrdRedis/XrdRedisRaft.cc            XrdRedis/XrdRedisRaft.hh
+    XrdRedis/XrdRedisJournal.cc         XrdRedis/XrdRedisJournal.hh
+    XrdRedis/XrdRedisRaftTalker.cc      XrdRedis/XrdRedisRaftTalker.hh
+    XrdRedis/XrdRedisFrontend.cc        XrdRedis/XrdRedisFrontend.hh)
 
   target_link_libraries(
     ${LIB_XRD_REDIS}

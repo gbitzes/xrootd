@@ -57,5 +57,7 @@ struct cmdMapInit {
     redis_cmd_map["raft_append_entry"] = XrdRedisCommand::RAFT_APPEND_ENTRY;
     redis_cmd_map["raft_info"] = XrdRedisCommand::RAFT_INFO;
     redis_cmd_map["raft_request_vote"] = XrdRedisCommand::RAFT_REQUEST_VOTE;
+    redis_cmd_map["raft_panic"] = XrdRedisCommand::RAFT_PANIC;
+    redis_cmd_map["raft_fetch"] = XrdRedisCommand::RAFT_FETCH;
   }
 } cmd_map_init;

@@ -30,10 +30,36 @@ XrdRedisRaftTalker::~XrdRedisRaftTalker() {
 
 }
 
-std::future<redisReplyPtr> XrdRedisRaftTalker::sendHandshake(RaftClusterID id) {
+std::future<redisReplyPtr> XrdRedisRaftTalker::sendHandshake(const RaftClusterID &id, const std::vector<RaftServer> &participants) {
   XrdRedisRequest req;
   req.emplace_back(new std::string("RAFT_HANDSHAKE"));
   req.emplace_back(new std::string(id));
+
+  std::ostringstream ss;
+  for(size_t i = 0; i < participants.size(); i++) {
+    ss << participants[i].hostname << ":" << participants[i].port;
+    if(i != participants.size()-1) ss << ",";
+  }
+
+  req.emplace_back(new std::string(ss.str()));
+  return tunnel.executeAsync(req);
+}
+
+std::future<redisReplyPtr> XrdRedisRaftTalker::sendAppendEntries(RaftTerm term, RaftServerID leaderId, LogIndex prevIndex,
+                                         RaftTerm prevTerm, LogIndex commit, XrdRedisRequest &cmd, RaftTerm entryTerm) {
+  XrdRedisRequest req;
+  req.emplace_back(new std::string("RAFT_APPEND_ENTRY"));
+  req.emplace_back(new std::string(SSTR(term)));
+  req.emplace_back(new std::string(SSTR(leaderId)));
+  req.emplace_back(new std::string(SSTR(prevIndex)));
+  req.emplace_back(new std::string(SSTR(prevTerm)));
+  req.emplace_back(new std::string(SSTR(commit)));
+  req.emplace_back(new std::string(SSTR(entryTerm)));
+
+  for(size_t i = 0; i < cmd.size(); i++) {
+    req.emplace_back(cmd[i]);
+  }
+
   return tunnel.executeAsync(req);
 }
 
@@ -46,6 +72,7 @@ std::future<redisReplyPtr> XrdRedisRaftTalker::sendHeartbeat(RaftTerm term, Raft
   req.emplace_back(new std::string(SSTR(prevIndex)));
   req.emplace_back(new std::string(SSTR(prevTerm)));
   req.emplace_back(new std::string(SSTR(commit)));
+  req.emplace_back(new std::string(SSTR(term)));
   req.emplace_back(new std::string("HEARTBEAT"));
   return tunnel.executeAsync(req);
 }
@@ -57,5 +84,11 @@ std::future<redisReplyPtr> XrdRedisRaftTalker::sendRequestVote(RaftTerm term, in
   req.emplace_back(new std::string(SSTR(candidateId)));
   req.emplace_back(new std::string(SSTR(lastIndex)));
   req.emplace_back(new std::string(SSTR(lastTerm)));
+  return tunnel.executeAsync(req);
+}
+
+std::future<redisReplyPtr> XrdRedisRaftTalker::sendPanic() {
+  XrdRedisRequest req;
+  req.emplace_back(new std::string("RAFT_PANIC"));
   return tunnel.executeAsync(req);
 }

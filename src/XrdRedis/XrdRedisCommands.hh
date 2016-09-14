@@ -56,7 +56,9 @@ enum class XrdRedisCommand {
   RAFT_APPEND_ENTRY,
   RAFT_INFO,
   RAFT_RECONFIGURE,
-  RAFT_REQUEST_VOTE
+  RAFT_REQUEST_VOTE,
+  RAFT_PANIC,
+  RAFT_FETCH
 };
 
 extern std::map<std::string, XrdRedisCommand> redis_cmd_map;

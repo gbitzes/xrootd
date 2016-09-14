@@ -45,6 +45,7 @@ XrdOucTrace *XrdRedisTrace = 0;
 XrdBuffManager *XrdRedisProtocol::BPool = 0; // Buffer manager
 XrdRedisBackend *XrdRedisProtocol::backend = 0;
 XrdRedisRaft *XrdRedisProtocol::raft = 0;
+XrdRedisFrontend *XrdRedisProtocol::frontend = 0;
 std::string XrdRedisProtocol::dbpath;
 std::string XrdRedisProtocol::myself;
 std::string XrdRedisProtocol::replicas;
@@ -335,7 +336,6 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
   TRACEI(DEBUG, "cmdMap size: " << redis_cmd_map.size());
   std::map<std::string, XrdRedisCommand>::iterator cmd = redis_cmd_map.find(command);
 
-
   if(cmd == redis_cmd_map.end()) {
     return SendErr(SSTR("unknown command '" << *request[0] << "'"));
   }
@@ -349,6 +349,8 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
 
   switch(cmd->second) {
     case XrdRedisCommand::PING: {
+      // return frontend->execute(request, lp);
+
       if(request.size() > 2) return SendErrArgs(command);
 
       if(request.size() == 1) {
@@ -375,6 +377,11 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
     }
     case XrdRedisCommand::SET: {
       if(request.size() != 3) return SendErrArgs(command);
+
+      if(raft) {
+        raft->pushUpdate(request);
+        return SendErr("yo");
+      }
 
       XrdRedisStatus st = backend->set(*request[1], *request[2]);
       if(!st.ok()) return SendErr(st);
@@ -556,15 +563,23 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
     case XrdRedisCommand::RAFT_HANDSHAKE: {
       authorized_for_raft = false;
 
-      if(request.size() != 2) return SendErrArgs(command);
+      if(request.size() != 3) return SendErrArgs(command);
 
-      if(*request[1] != raft->getClusterID()) return SendErr(SSTR("wrong cluster id"));
+      if(*request[1] != raft->getClusterID()) {
+        std::cout << "cluster id mismatch" << std::endl;
+        return SendErr("cluster id mismatch");
+      }
+      if(*request[2] != replicas) {
+        std::cout << "participants mismatch" << std::endl;
+        return SendErr("participants mismatch");
+      }
+
       authorized_for_raft = true;
       return SendOK();
     }
     case XrdRedisCommand::RAFT_APPEND_ENTRY: {
       if(!authorized_for_raft) return SendErr("not authorized to issue raft commands");
-      if(request.size() < 7) return SendErrArgs(command);
+      if(request.size() < 8) return SendErrArgs(command);
 
       RaftTerm term;
       my_strtoll(*request[1], term);
@@ -581,12 +596,15 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       LogIndex leaderCommit;
       my_strtoll(*request[5], leaderCommit);
 
+      RaftTerm entryTerm;
+      my_strtoll(*request[6], entryTerm);
+
       XrdRedisRequest req;
-      for(size_t i = 6; i < request.size(); i++) {
+      for(size_t i = 7; i < request.size(); i++) {
         req.push_back(request[i]);
       }
 
-      return SendArray(raft->appendEntries(term, server, prevlog, prevterm, req, leaderCommit));
+      return SendArray(raft->appendEntries(term, server, prevlog, prevterm, req, entryTerm, leaderCommit));
     }
     case XrdRedisCommand::RAFT_REQUEST_VOTE: {
       if(!authorized_for_raft) return SendErr("not authorized to issue raft commands");
@@ -619,6 +637,20 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
 
       // parse request[2]
 
+    }
+    case XrdRedisCommand::RAFT_PANIC: {
+      if(request.size() != 1) return SendErrArgs(command);
+
+      raft->panic();
+      return SendOK();
+    }
+    case XrdRedisCommand::RAFT_FETCH: {
+      if(request.size() != 2) return SendErrArgs(command);
+
+      LogIndex index;
+      my_strtoll(*request[1], index);
+
+      return SendArray(raft->fetch(index));
     }
     default: {
       return SendErr("an unknown error occurred when dispatching the command");
@@ -953,6 +985,7 @@ int XrdRedisProtocol::Configure(char *parms, XrdProtocol_Config * pi) {
     }
     backend = rocksdb;
   }
+
   // else if(primary == "replicator") {
   //   if(dbpath.empty()) {
   //     eDest.Emsg("Config", "redis.dbpath required when the primary datastore is rocksdb");
@@ -997,7 +1030,7 @@ int XrdRedisProtocol::Configure(char *parms, XrdProtocol_Config * pi) {
     return 0;
   }
 
-  // frontend = new XrdRedisDirectFrontend(backend);
+  frontend = new XrdRedisFrontend();
   return 1;
 }
 

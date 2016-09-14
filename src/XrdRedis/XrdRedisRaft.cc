@@ -55,16 +55,69 @@ std::vector<std::string> parseRaftResponse(redisReplyPtr &reply) {
   return ret;
 }
 
-bool is_positive_vote(redisReplyPtr &reply) {
-  if(reply == nullptr) return false;
-  if(reply->type != REDIS_REPLY_ARRAY) return false;
+void XrdRedisRaft::transition(RaftState newstate, RaftTerm newterm, RaftServerID newvotedfor, RaftServerID newleader) {
+  std::lock_guard<std::mutex> lock(transitionMutex);
+
+  // if(raftState != newstate) {
+  //   std::cout << "RAFT: state transition: " << stateToString(raftState) << " => " << stateToString(newstate) << std::endl;
+  //   raftState = newstate;
+  // }
+  //
+  // if(raftTerm != newterm) {
+  //   std::cout << "RAFT: transitioning from term " << journal.getCurrentTerm() << " to " << newterm << std::endl;
+  //   raftTerm = newterm;
+  //   journal.setCurrentTerm(newterm);
+  // }
+  //
+  // if(newvotedfor != -1) {
+  //   std::cout << "RAFT: setting votedFor for term " << journal.getCurrentTerm() << " to machine " << newvotedfor << std::endl;
+  //   journal.setVotedFor(newvotedfor);
+  // }
+  //
+  // if(newLeader != -1) {
+  //   std::cout << "RAFT: recognizing leader " << newleader << " for term " << journal.getCurrentTerm() << std::endl;
+  // }
+  // leader = newleader;
+}
+
+static std::string redis_reply_to_str(redisReply *element) {
+  if(element->type != REDIS_REPLY_STRING) return std::string();
+  return std::string(element->str, element->len);
+}
+
+static std::pair<RaftTerm, bool> processVote(redisReplyPtr &reply) {
+  bool answer = false;
+  RaftTerm term = -1;
+
+  if(reply == nullptr) return {term, answer};
+  if(reply->type != REDIS_REPLY_ARRAY) return {term, answer};
 
   for(size_t i = 0; i < reply->elements; i++) {
-    if(std::string(reply->element[i]->str, reply->element[i]->len) == "VOTE-GRANTED") {
-      return std::string(reply->element[i+1]->str, reply->element[i+1]->len) == "TRUE";
+    if(redis_reply_to_str(reply->element[i]) == "VOTE-GRANTED") {
+      answer = (redis_reply_to_str(reply->element[i+1]) == "TRUE");
+      i += 1;
+    }
+    else if(redis_reply_to_str(reply->element[i]) == "TERM") {
+      my_strtoll(redis_reply_to_str(reply->element[i+1]), term);
     }
   }
-  return false;
+
+  return {term, answer};
+}
+
+size_t XrdRedisRaft::processVotes(std::vector<std::future<redisReplyPtr>> &replies) {
+  size_t votes = 1;
+
+  for(size_t i = 0; i < replies.size(); i++) {
+    redisReplyPtr reply = replies[i].get();
+    std::pair<RaftTerm, bool> outcome = processVote(reply);
+    if(outcome.first != -1) {
+      updateTermIfNecessary(outcome.first, -1);
+    }
+
+    if(outcome.second) votes++;
+  }
+  return votes;
 }
 
 void XrdRedisRaft::performElection() {
@@ -75,20 +128,21 @@ void XrdRedisRaft::performElection() {
 
   std::vector<std::future<redisReplyPtr>> replies;
   for(size_t i = 0; i < talkers.size(); i++) {
-    talkers[i]->sendHandshake(journal.getClusterID());
+    if(!talkers[i]) continue;
+
+    talkers[i]->sendHandshake(journal.getClusterID(), participants);
     replies.push_back(talkers[i]->sendRequestVote(newTerm, myselfID, 0, 0)); // TODO
   }
 
-  size_t acks = 1;
-  for(size_t i = 0; i < talkers.size(); i++) {
-    redisReplyPtr r = replies[i].get();
-    if(r) {
-      if(is_positive_vote(r)) acks++;
-      std::cout << std::string(r->str, r->len) << std::endl;
-    }
+  size_t acks = processVotes(replies);
+
+  if(raftState != RaftState::candidate) {
+    // no longer a candidate, abort. We most likely received information about a newer term in the meantime
+    std::cout << "RAFT: election round for " << newTerm << " interrupted after receiving " << acks << " votes. " << std::endl;
+    return;
   }
 
-  if(acks >= participants.size()/2 + 1) {
+  if(acks >= quorumThreshold) {
     stateTransition(RaftState::leader);
     leader = myselfID;
     std::cout << "RAFT: election round for " << newTerm << " successful with " << acks << " votes, long may I reign" << std::endl;
@@ -105,6 +159,70 @@ void XrdRedisRaft::updateRandomTimeout() {
   std::uniform_int_distribution<> dist(timeoutLow.count(), timeoutHigh.count());
   randomTimeout = std::chrono::milliseconds(dist(gen));
   std::cout << "RAFT: setting random timeout to " << randomTimeout.count() << "ms" << std::endl;
+}
+
+static std::pair<RaftTerm, bool> processAppendEntriesReply(redisReplyPtr &reply) {
+  bool success = false;
+  RaftTerm term = -1;
+
+  if(reply == nullptr) return {term, success};
+  if(reply->type != REDIS_REPLY_ARRAY) return {term, success};
+
+  for(size_t i = 0; i < reply->elements; i++) {
+    if(redis_reply_to_str(reply->element[i]) == "OUTCOME") {
+      success = (redis_reply_to_str(reply->element[i+1]) == "OK");
+      i += 1;
+    }
+    else if(redis_reply_to_str(reply->element[i]) == "TERM") {
+      my_strtoll(redis_reply_to_str(reply->element[i+1]), term);
+    }
+  }
+
+  return {term, success};
+}
+
+// I'm a master, send updates / heartbeats to a specific follower
+void XrdRedisRaft::monitorFollower(RaftServerID machine) {
+  assert(follower != myselfID);
+  std::cout << "starting monitoring thread for " << machine << std::endl;
+
+  LogIndex nextIndex = journal.getLogSize();
+
+  while(raftState == RaftState::leader) {
+    talkers[machine]->sendHandshake(journal.getClusterID(), participants);
+
+    RaftTerm prevTerm;
+    XrdRedisRequest tmp;
+    journal.fetch(nextIndex-1, prevTerm, tmp);
+
+    std::future<redisReplyPtr> fut;
+    redisReplyPtr reply;
+
+    std::pair<RaftTerm, bool> outcome;
+    if(nextIndex == journal.getLogSize()) {
+      fut = talkers[machine]->sendHeartbeat(journal.getCurrentTerm(), myselfID, nextIndex-1, prevTerm, 0);
+      reply = fut.get();
+      outcome = processAppendEntriesReply(reply);
+    }
+    else {
+      RaftTerm entryTerm;
+      XrdRedisRequest entry;
+      journal.fetch(nextIndex, entryTerm, entry);
+      fut = talkers[machine]->sendAppendEntries(journal.getCurrentTerm(), myselfID, nextIndex-1, prevTerm, 0, entry, entryTerm);
+      reply = fut.get();
+      outcome = processAppendEntriesReply(reply);
+      if(outcome.second) nextIndex++;
+    }
+
+    if(!outcome.second && nextIndex > 1 && reply) {
+      // BUG: only decrement on entry mismatch
+      nextIndex--;
+    }
+
+    updateTermIfNecessary(outcome.first, -1);
+    std::this_thread::sleep_for(timeoutLow);
+  }
+  std::cout << "shutting down monitoring thread for " << machine << std::endl;
 }
 
 void XrdRedisRaft::monitor() {
@@ -128,11 +246,17 @@ void XrdRedisRaft::monitor() {
 
     // I'm leader - send heartbeats
     while(raftState == RaftState::leader) {
-      for(size_t i = 0; i < talkers.size(); i++) {
-        talkers[i]->sendHandshake(journal.getClusterID());
-        std::future<redisReplyPtr> reply = talkers[i]->sendHeartbeat(journal.getCurrentTerm(), myselfID, 6, 2, 0);
+      std::vector<std::thread> monitors;
+
+      for(size_t i = 0; i < participants.size(); i++) {
+        if( (RaftServerID) i != myselfID) {
+          monitors.emplace_back(&XrdRedisRaft::monitorFollower, this, i);
+        }
       }
-      std::this_thread::sleep_for(timeoutLow);
+
+      for(size_t i = 0; i < monitors.size(); i++) {
+        monitors[i].join();
+      }
     }
 
     updateRandomTimeout();
@@ -157,10 +281,16 @@ XrdRedisStatus XrdRedisRaft::configureParticipants(std::vector<RaftServer> &reps
   talkers.clear();
 
   for(size_t i = 0; i < participants.size(); i++) {
-    if(participants[i].hostname == myself.hostname && participants[i].port == myself.port) continue;
+    if(participants[i].hostname == myself.hostname && participants[i].port == myself.port) {
+      talkers.push_back(nullptr);
+      continue;
+    }
+
     talkers.push_back(new XrdRedisRaftTalker(participants[i]));
   }
 
+  quorumThreshold = (participants.size()/2) + 1;
+  std::cout << "RAFT: setting quorum threshold to " << quorumThreshold << std::endl;
   return OK();
 }
 
@@ -200,8 +330,28 @@ void XrdRedisRaft::updateTermIfNecessary(RaftTerm term, RaftServerID newLeader) 
   }
 }
 
+void XrdRedisRaft::panic() {
+  std::cout << "RAFT: PANIC mode!!! Advancing term by 100 and triggering re-election." << std::endl;
+  journal.setCurrentTerm(journal.getCurrentTerm() + 100);
+  stateTransition(RaftState::candidate);
+}
+
+void XrdRedisRaft::triggerPanic() {
+  std::cout << "RAFT: Triggering cluster-wide PANIC to force re-election." << std::endl;
+  for(size_t i = 0; i < talkers.size(); i++) {
+    if(!talkers[i]) continue;
+    talkers[i]->sendPanic();
+  }
+  panic();
+}
+
+XrdRedisStatus XrdRedisRaft::pushUpdate(XrdRedisRequest &req) {
+  journal.leaderAppend(req);
+  return OK();
+}
+
 std::vector<std::string> XrdRedisRaft::appendEntries(RaftTerm term, RaftServerID leaderId, LogIndex prevIndex, RaftTerm prevTerm,
-                                           XrdRedisRequest &req, LogIndex commit) {
+                                           XrdRedisRequest &req, RaftTerm entryTerm, LogIndex commit) {
 
 
   ScopedAdder inflight(requestsInFlight);
@@ -226,19 +376,22 @@ std::vector<std::string> XrdRedisRaft::appendEntries(RaftTerm term, RaftServerID
 
   if(leader != leaderId) {
     std::cout << "SERIOUS WARNING: received appendEntries from unrecognized leader!!" << std::endl;
-    ret.emplace_back("OUTCOME FAIL");
+    ret.emplace_back("OUTCOME");
+    ret.emplace_back("FAIL");
     ret.emplace_back("You are not the current leader!");
+    this->triggerPanic();
   }
 
   lastAppend = std::chrono::steady_clock::now();
 
   if(!journal.entryExists(prevTerm, prevIndex)) {
-    ret.emplace_back("OUTCOME FAIL");
+    ret.emplace_back("OUTCOME");
+    ret.emplace_back("FAIL");
     ret.emplace_back("Log entry mismatch");
     return ret;
   }
 
-  XrdRedisStatus st = journal.append(prevTerm, prevIndex, req);
+  XrdRedisStatus st = journal.append(prevTerm, prevIndex, req, entryTerm);
 
   ret.emplace_back("OUTCOME");
   if(!st.ok()) {
@@ -253,6 +406,8 @@ std::vector<std::string> XrdRedisRaft::appendEntries(RaftTerm term, RaftServerID
 }
 
 std::vector<std::string> XrdRedisRaft::requestVote(RaftTerm term, int64_t candidateId, LogIndex lastIndex, RaftTerm lastTerm) {
+  assert(candidateId != myselfID);
+
   std::vector<std::string> ret;
   updateTermIfNecessary(term, -1);
 
@@ -271,6 +426,26 @@ std::vector<std::string> XrdRedisRaft::requestVote(RaftTerm term, int64_t candid
 
   std::cout << "Answering " << granted << " to requestVote for term " << term
             << " and candidate " << candidateId << "." << std::endl;
+  return ret;
+}
+
+// for interactive debugging purposes only
+std::vector<std::string> XrdRedisRaft::fetch(LogIndex index) {
+  std::vector<std::string> ret;
+
+  RaftTerm term;
+  XrdRedisRequest req;
+
+  XrdRedisStatus st = journal.fetch(index, term, req);
+  if(!st.ok()) return {};
+
+  ret.emplace_back("TERM");
+  ret.emplace_back(SSTR(term));
+
+  for(size_t i = 0; i < req.size(); i++) {
+    ret.emplace_back(*req[i]);
+  }
+
   return ret;
 }
 

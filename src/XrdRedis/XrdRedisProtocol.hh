@@ -41,6 +41,7 @@
 #include "XrdRedisBackend.hh"
 #include "XrdRedisRocksDB.hh"
 #include "XrdRedisRaft.hh"
+#include "XrdRedisFrontend.hh"
 
 #include <sstream>
 #include <vector>
@@ -152,6 +153,7 @@ protected:
   static XrdBuffManager *BPool; // Buffer manager
   static XrdRedisBackend *backend;
   static XrdRedisRaft *raft;
+  static XrdRedisFrontend *frontend;
 
   static std::string dbpath;
   static std::string replicas;
@@ -163,14 +165,9 @@ protected:
   static std::chrono::steady_clock::time_point last_raft_config_update;
   static std::vector<RaftServer> raftServers;
 
-
   static int readWait;
 
   void Reset();
-
-
-
-
 };
 
 #endif

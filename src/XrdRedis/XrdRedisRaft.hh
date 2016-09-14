@@ -54,18 +54,25 @@ public:
   XrdRedisRaft(XrdRedisBackend *journalStore, XrdRedisBackend *smachine, RaftClusterID id, RaftServer myself);
 
   std::vector<std::string> appendEntries(RaftTerm term, RaftServerID leaderId, LogIndex prevIndex, RaftTerm prevTerm,
-                               XrdRedisRequest &req, LogIndex commit);
+                               XrdRedisRequest &req, RaftTerm entryTerm, LogIndex commit);
 
   std::vector<std::string> requestVote(RaftTerm term, int64_t candidateId, LogIndex lastIndex, RaftTerm lastTerm);
 
   std::vector<std::string> info();
+  std::vector<std::string> fetch(LogIndex index);
 
   RaftClusterID getClusterID() {
     return journal.getClusterID();
   }
 
   XrdRedisStatus configureParticipants(std::vector<RaftServer> &reps);
+  void panic();
+
+  XrdRedisStatus pushUpdate(XrdRedisRequest &req);
 private:
+  std::condition_variable logUpdates;
+  size_t quorumThreshold;
+
   std::vector<XrdRedisRaftTalker*> talkers;
 
   std::atomic<int> requestsInFlight{0};
@@ -83,18 +90,27 @@ private:
 
   void stateTransition(RaftState newstate);
   void monitor();
+  void monitorFollower(RaftServerID machine);
   void updateRandomTimeout();
   void becomeLeader();
   void performElection();
+
+
+  size_t processVotes(std::vector<std::future<redisReplyPtr>> &replies);
+
+  void triggerPanic();
+
+  void transition(RaftState newstate, RaftTerm newterm, RaftServerID newvotedfor, RaftServerID newleader);
+  std::mutex transitionMutex;
 
   void updateTermIfNecessary(RaftTerm term, RaftServerID leader);
   void declareTerm(RaftTerm newTerm, RaftServerID newLeader);
 
   std::thread monitorThread;
 
-  std::chrono::milliseconds heartbeatInterval{20};
-  std::chrono::milliseconds timeoutLow{50};
-  std::chrono::milliseconds timeoutHigh{100};
+  std::chrono::milliseconds heartbeatInterval{75};
+  std::chrono::milliseconds timeoutLow{200};
+  std::chrono::milliseconds timeoutHigh{300};
 
   std::chrono::milliseconds randomTimeout;
 
