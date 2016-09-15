@@ -28,6 +28,7 @@
 #include "XrdRedisBackend.hh"
 #include "XrdRedisRaft.hh"
 
+
 class XrdRedisFrontend {
 public:
   // XrdRedisFrontend(XrdRedisBackend *backend, XrdRedisRaft *raft);

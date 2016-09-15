@@ -48,15 +48,17 @@ private:
   RaftTerm termOfLastEntry = -1;
 
   RaftClusterID clusterID = "uninitialized";
+  LogIndex lastApplied = 0;
 
-  // transient values, can always be inferred from stable storage
-  LogIndex lastApplied = -1;
-  LogIndex commitIndex = -1;
+  // transient value, can always be inferred from stable storage
+  LogIndex commitIndex = 0;
 
   XrdRedisStatus retrieve(const std::string &key, int64_t &value);
   void removeInconsistent(LogIndex start);
 
   XrdRedisStatus setLogSize(const LogIndex newsize);
+  XrdRedisStatus setLastApplied(LogIndex index);
+
   XrdRedisStatus rawAppend(RaftTerm term, LogIndex index, XrdRedisRequest &cmd);
 public:
   XrdRedisJournal2(XrdRedisBackend *store, RaftClusterID id);
@@ -92,15 +94,18 @@ public:
 
   XrdRedisStatus setCurrentTerm(RaftTerm term);
   XrdRedisStatus setVotedFor(RaftServerID server);
-
+  void setCommitIndex(LogIndex index);
 
   bool entryExists(RaftTerm term, LogIndex revision);
 
   XrdRedisStatus append(RaftTerm prevTerm, LogIndex prevIndex, XrdRedisRequest &cmd, RaftTerm entryTerm);
   bool requestVote(RaftTerm term, int64_t candidateId, LogIndex lastIndex, RaftTerm lastTerm);
 
+  XrdRedisStatus fetchTerm(LogIndex index, RaftTerm &term);
   XrdRedisStatus fetch(LogIndex index, RaftTerm &term, XrdRedisRequest &cmd);
   std::pair<LogIndex, RaftTerm> leaderAppend(XrdRedisRequest &req);
+
+  void applyCommits();
 
   // XrdRedisStatus create(const std::string &filename);
   // XrdRedisStatus initialize(const std::string &filename);

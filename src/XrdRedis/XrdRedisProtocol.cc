@@ -631,6 +631,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
     case XrdRedisCommand::RAFT_RECONFIGURE: {
       // don't check if authorized for raft, this is intentional. This is why we also supply
       // the cluster ID
+      // TODO: might want to drop this command after all
       if(request.size() != 3) return SendErrArgs(command);
 
       if(*request[1] != raft->getClusterID()) return SendErr("wrong cluster id");

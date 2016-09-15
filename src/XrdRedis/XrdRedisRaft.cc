@@ -126,12 +126,16 @@ void XrdRedisRaft::performElection() {
   journal.setCurrentTerm(newTerm);
   journal.setVotedFor(myselfID);
 
+  LogIndex lastIndex = journal.getLogSize() - 1;
+  RaftTerm lastTerm;
+  journal.fetchTerm(lastIndex, lastTerm);
+
   std::vector<std::future<redisReplyPtr>> replies;
   for(size_t i = 0; i < talkers.size(); i++) {
     if(!talkers[i]) continue;
 
     talkers[i]->sendHandshake(journal.getClusterID(), participants);
-    replies.push_back(talkers[i]->sendRequestVote(newTerm, myselfID, 0, 0)); // TODO
+    replies.push_back(talkers[i]->sendRequestVote(newTerm, myselfID, lastIndex, lastTerm)); // TODO
   }
 
   size_t acks = processVotes(replies);
@@ -200,7 +204,7 @@ void XrdRedisRaft::monitorFollower(RaftServerID machine) {
 
     std::pair<RaftTerm, bool> outcome;
     if(nextIndex == journal.getLogSize()) {
-      fut = talkers[machine]->sendHeartbeat(journal.getCurrentTerm(), myselfID, nextIndex-1, prevTerm, 0);
+      fut = talkers[machine]->sendHeartbeat(journal.getCurrentTerm(), myselfID, nextIndex-1, prevTerm, journal.getCommitIndex());
       reply = fut.get();
       outcome = processAppendEntriesReply(reply);
     }
@@ -208,7 +212,7 @@ void XrdRedisRaft::monitorFollower(RaftServerID machine) {
       RaftTerm entryTerm;
       XrdRedisRequest entry;
       journal.fetch(nextIndex, entryTerm, entry);
-      fut = talkers[machine]->sendAppendEntries(journal.getCurrentTerm(), myselfID, nextIndex-1, prevTerm, 0, entry, entryTerm);
+      fut = talkers[machine]->sendAppendEntries(journal.getCurrentTerm(), myselfID, nextIndex-1, prevTerm, journal.getCommitIndex(), entry, entryTerm);
       reply = fut.get();
       outcome = processAppendEntriesReply(reply);
       if(outcome.second) nextIndex++;
@@ -225,6 +229,18 @@ void XrdRedisRaft::monitorFollower(RaftServerID machine) {
   std::cout << "shutting down monitoring thread for " << machine << std::endl;
 }
 
+// I'm a follower, monitor what the leader is doing
+void XrdRedisRaft::monitorLeader() {
+  while(raftState == RaftState::follower) {
+    journal.applyCommits();
+
+    std::this_thread::sleep_for(randomTimeout);
+    if(std::chrono::steady_clock::now() - lastAppend > randomTimeout) {
+      stateTransition(RaftState::candidate);
+    }
+  }
+}
+
 void XrdRedisRaft::monitor() {
   // things are a bit volatile in the beginning, maybe the request processing
   // threads have not started yet. Avoid being too agressive into becoming
@@ -234,10 +250,7 @@ void XrdRedisRaft::monitor() {
   while(raftState != RaftState::shutdown) {
     // make sure I'm receiving heartbeats from the leader
     while(raftState == RaftState::follower) {
-      std::this_thread::sleep_for(randomTimeout);
-      if(std::chrono::steady_clock::now() - lastAppend > randomTimeout) {
-        stateTransition(RaftState::candidate);
-      }
+      monitorLeader();
     }
 
     while(raftState == RaftState::candidate) {
@@ -246,6 +259,8 @@ void XrdRedisRaft::monitor() {
 
     // I'm leader - send heartbeats
     while(raftState == RaftState::leader) {
+      acknowledgements.clear();
+
       std::vector<std::thread> monitors;
 
       for(size_t i = 0; i < participants.size(); i++) {
@@ -346,7 +361,9 @@ void XrdRedisRaft::triggerPanic() {
 }
 
 XrdRedisStatus XrdRedisRaft::pushUpdate(XrdRedisRequest &req) {
-  journal.leaderAppend(req);
+  std::pair<LogIndex, RaftTerm> pair = journal.leaderAppend(req);
+  journal.setCommitIndex(pair.first); // BUG !!!!! must verify followers have acked this
+  journal.applyCommits();
   return OK();
 }
 
@@ -382,6 +399,7 @@ std::vector<std::string> XrdRedisRaft::appendEntries(RaftTerm term, RaftServerID
     this->triggerPanic();
   }
 
+  journal.setCommitIndex(commit);
   lastAppend = std::chrono::steady_clock::now();
 
   if(!journal.entryExists(prevTerm, prevIndex)) {
@@ -405,7 +423,7 @@ std::vector<std::string> XrdRedisRaft::appendEntries(RaftTerm term, RaftServerID
   return ret;
 }
 
-std::vector<std::string> XrdRedisRaft::requestVote(RaftTerm term, int64_t candidateId, LogIndex lastIndex, RaftTerm lastTerm) {
+std::vector<std::string> XrdRedisRaft::requestVote(RaftTerm term, RaftServerID candidateId, LogIndex lastIndex, RaftTerm lastTerm) {
   assert(candidateId != myselfID);
 
   std::vector<std::string> ret;
@@ -468,6 +486,9 @@ std::vector<std::string> XrdRedisRaft::info() {
 
   ret.emplace_back("LOG-SIZE");
   ret.emplace_back(SSTR(journal.getLogSize()));
+
+  ret.emplace_back("LAST-APPLIED");
+  ret.emplace_back(SSTR(journal.getLastApplied()));
 
   ret.emplace_back("REQUESTS-IN-FLIGHT");
   ret.emplace_back(SSTR(requestsInFlight));

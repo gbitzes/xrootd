@@ -26,6 +26,7 @@
 #include "XrdRedisRaftTalker.hh"
 #include <atomic>
 #include <thread>
+#include <map>
 
 class ScopedAdder {
 public:
@@ -70,6 +71,9 @@ public:
 
   XrdRedisStatus pushUpdate(XrdRedisRequest &req);
 private:
+  std::mutex acknowledgementsMutex;
+  std::map<LogIndex, size_t> acknowledgements;
+
   std::condition_variable logUpdates;
   size_t quorumThreshold;
 
@@ -91,6 +95,7 @@ private:
   void stateTransition(RaftState newstate);
   void monitor();
   void monitorFollower(RaftServerID machine);
+  void monitorLeader();
   void updateRandomTimeout();
   void becomeLeader();
   void performElection();

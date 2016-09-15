@@ -57,6 +57,11 @@ XrdRedisJournal2::XrdRedisJournal2(XrdRedisBackend *store, RaftClusterID id) : s
   st = retrieve("RAFT_LOG_SIZE", logSize);
   if(!st.ok()) throw st;
 
+  st = retrieve("RAFT_LAST_APPLIED", lastApplied);
+  if(!st.ok()) throw st;
+
+  commitIndex = lastApplied;
+
   if(logSize == 0) {
     XrdRedisRequest req;
     req.emplace_back(std::make_shared<std::string>("PING"));
@@ -79,6 +84,20 @@ bool XrdRedisJournal2::requestVote(RaftTerm term, int64_t candidateId, LogIndex 
     return false;
   }
 
+  RaftTerm myPrevTerm;
+  XrdRedisRequest cmd;
+  fetch(logSize-1, myPrevTerm, cmd);
+
+  if(myPrevTerm > lastTerm) {
+    std::cout << "RAFT: rejecting vote from " << candidateId << " because my log is more up-to-date: term of last entry " << myPrevTerm << " vs " << lastTerm << std::endl;
+    return false;
+  }
+
+  if(logSize-1 > lastIndex) {
+    std::cout << "RAFT: rejecting vote from " << candidateId << " because my log is more up-to-date: index of last entry " << logSize-1 << " vs " << lastIndex << std::endl;
+    return false;
+  }
+
   this->setVotedFor(candidateId);
   return true;
 }
@@ -92,9 +111,42 @@ XrdRedisStatus XrdRedisJournal2::setCurrentTerm(RaftTerm term) {
   return storage->set("RAFT_VOTED_FOR", "-1");
 }
 
+void XrdRedisJournal2::applyCommits() {
+  while(lastApplied < commitIndex && commitIndex < logSize) {
+    std::cout << "commiting " << lastApplied+1 << " to state machine" << std::endl;
+
+    XrdRedisRequest cmd;
+    RaftTerm term;
+
+    std::cout << __FILE__ << ":" << __LINE__ << std::endl;
+
+    fetch(lastApplied+1, term, cmd);
+    std::cout << __FILE__ << ":" << __LINE__ << std::endl;
+
+    if(*cmd[0] == "SET" || *cmd[0] == "set") {
+      std::cout << __FILE__ << ":" << __LINE__ << std::endl;
+      storage->set(*cmd[1], *cmd[2]);
+      std::cout << __FILE__ << ":" << __LINE__ << std::endl;
+    }
+    else {
+      std::terminate();
+    }
+
+    std::cout << __FILE__ << ":" << __LINE__ << std::endl;
+    setLastApplied(lastApplied+1);
+    std::cout << __FILE__ << ":" << __LINE__ << std::endl;
+  }
+}
+
 XrdRedisStatus XrdRedisJournal2::setVotedFor(RaftServerID vote) {
   XrdRedisStatus st = storage->set("RAFT_VOTED_FOR", SSTR(vote));
   if(st.ok()) votedFor = vote;
+  return st;
+}
+
+XrdRedisStatus XrdRedisJournal2::setLastApplied(LogIndex index) {
+  XrdRedisStatus st = storage->set("RAFT_LAST_APPLIED", SSTR(index));
+  if(st.ok()) lastApplied = index;
   return st;
 }
 
@@ -138,6 +190,10 @@ XrdRedisStatus XrdRedisJournal2::setLogSize(const LogIndex newsize) {
   XrdRedisStatus st = storage->set("RAFT_LOG_SIZE", SSTR(newsize));
   if(st.ok()) logSize = newsize;
   return st;
+}
+
+void XrdRedisJournal2::setCommitIndex(LogIndex index) {
+  commitIndex = index;
 }
 
 static int64_t fetch_int_from_string(const char *pos) {
@@ -191,7 +247,6 @@ std::pair<LogIndex, RaftTerm> XrdRedisJournal2::leaderAppend(XrdRedisRequest &re
   XrdRedisRequest tmp;
 
   fetch(index-1, previousTerm, tmp);
-  std::cout << "previous term: " << previousTerm << std::endl;
   return {index, previousTerm}; // BUG
 }
 
@@ -204,6 +259,16 @@ XrdRedisStatus XrdRedisJournal2::rawAppend(RaftTerm term, LogIndex index, XrdRed
 
   XrdRedisStatus st = storage->set(SSTR("REVISION_" << index), serializeRedisRequest(term, cmd));
   std::cout << st.ToString() << std::endl;
+  return st;
+}
+
+XrdRedisStatus XrdRedisJournal2::fetchTerm(LogIndex index, RaftTerm &term) {
+  std::string data;
+  XrdRedisStatus st = storage->get(SSTR("REVISION_" << index), data);
+  // TODO: investigate whether I can only retrieve the first few bytes of a value in rocksdb
+  if(!st.ok()) return st;
+
+  term = fetch_int_from_string(data.c_str());
   return st;
 }
 
