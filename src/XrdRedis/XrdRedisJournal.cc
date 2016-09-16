@@ -111,6 +111,15 @@ XrdRedisStatus XrdRedisJournal2::setCurrentTerm(RaftTerm term) {
   return storage->set("RAFT_VOTED_FOR", "-1");
 }
 
+static redisReplyPtr redis_reply_ok() {
+  redisReply *r = (redisReply*) calloc(1, sizeof(redisReply));
+  r->type = REDIS_REPLY_STATUS;
+  r->len = 2;
+  r->str = (char*) malloc( (r->len+1) * sizeof(char));
+  strcpy(r->str, "OK");
+  return redisReplyPtr(r, freeReplyObject);
+}
+
 void XrdRedisJournal2::applyCommits() {
   while(lastApplied < commitIndex && commitIndex < logSize) {
     std::cout << "commiting " << lastApplied+1 << " to state machine" << std::endl;
@@ -118,23 +127,25 @@ void XrdRedisJournal2::applyCommits() {
     XrdRedisRequest cmd;
     RaftTerm term;
 
-    std::cout << __FILE__ << ":" << __LINE__ << std::endl;
-
     fetch(lastApplied+1, term, cmd);
-    std::cout << __FILE__ << ":" << __LINE__ << std::endl;
+
+    auto it = pendingReplies.find(lastApplied+1);
 
     if(*cmd[0] == "SET" || *cmd[0] == "set") {
-      std::cout << __FILE__ << ":" << __LINE__ << std::endl;
       storage->set(*cmd[1], *cmd[2]);
-      std::cout << __FILE__ << ":" << __LINE__ << std::endl;
+      if(it != pendingReplies.end()) {
+        it->second.set_value(redis_reply_ok());
+      }
     }
     else {
       std::terminate();
     }
 
-    std::cout << __FILE__ << ":" << __LINE__ << std::endl;
+    if(it != pendingReplies.end()) {
+      pendingReplies.erase(it);
+    }
+
     setLastApplied(lastApplied+1);
-    std::cout << __FILE__ << ":" << __LINE__ << std::endl;
   }
 }
 
@@ -176,6 +187,7 @@ bool XrdRedisJournal2::entryExists(RaftTerm term, LogIndex revision) {
 
 
 void XrdRedisJournal2::removeInconsistent(LogIndex start) {
+  // TODO: take care of pendingReplies
   std::cout << "Major raft event: remove inconsistent entries, from " << start << " to the end, " << logSize << std::endl;
   for(LogIndex i = start; i < logSize; i++) {
     XrdRedisStatus st = storage->del(SSTR("REVISION_" << i));
@@ -235,6 +247,15 @@ static std::string serializeRedisRequest(RaftTerm term, const XrdRedisRequest &c
   }
 
   return ss.str();
+}
+
+std::pair<LogIndex, std::future<redisReplyPtr>> XrdRedisJournal2::leaderAppend2(XrdRedisRequest &req) {
+  LogIndex index = logSize;
+  rawAppend(currentTerm, index, req);
+  setLogSize(logSize+1);
+
+  auto resp = pendingReplies.emplace(std::make_pair(index, std::promise<redisReplyPtr>()));
+  return {index, resp.first->second.get_future()};
 }
 
 // unconditionally append an entry to the log and return its index, along with the term of the *previous* entry

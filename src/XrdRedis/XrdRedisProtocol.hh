@@ -136,6 +136,7 @@ private:
   int ProcessCommand(XrdOucString& tmpline);
 
   /// Send a response
+  int Send(redisReplyPtr reply);
   int SendNumber(int number);
   int SendArray(const std::vector<std::string> &arr);
   int Send(std::stringstream& sstream);

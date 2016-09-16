@@ -50,6 +50,39 @@ enum class RaftState {
   shutdown = 3
 };
 
+// synchronization class to determine when it is safe to send an ACK to the client
+// class QuorumTracker {
+// public:
+//   QuorumTracker() {}
+//
+//   void init(size_t nparticipants, size_t quorumThreshold) {
+//     this->nparticipants = nparticipants;
+//     this->quorumThreshold = quorumThreshold;
+//
+//     for(size_t i = 0; i < nparticipants; i++) {
+//       nextIndex.push_back(i);
+//     }
+//      lowestWithQuorum = -1;
+//   }
+//
+//   // notify the tracker that 'machine' has acked all entries until nextIndex
+//   void notifyNextIndex(RaftServerId machine, LogIndex nextIndex);
+//
+//   // wait until a quorum of machines have acked 'index'
+//   bool waitForQuorum(LogIndex index);
+//
+//   // no longer a leader, release any threads waiting
+//   void releaseAll();
+// private:
+//   std::vector<LogIndex> nextIndex;
+//   std::map<LogIndex, std::condition_variable> vars;
+//
+//   LogIndex lowestWithQuorum;
+//
+//   size_t quorumThreshold;
+//   size_t nparticipants;
+// };
+
 class XrdRedisRaft {
 public:
   XrdRedisRaft(XrdRedisBackend *journalStore, XrdRedisBackend *smachine, RaftClusterID id, RaftServer myself);
@@ -69,13 +102,20 @@ public:
   XrdRedisStatus configureParticipants(std::vector<RaftServer> &reps);
   void panic();
 
-  XrdRedisStatus pushUpdate(XrdRedisRequest &req);
+  std::future<redisReplyPtr> pushUpdate(XrdRedisRequest &req);
+
+  std::string getLeader();
 private:
-  std::mutex acknowledgementsMutex;
-  std::map<LogIndex, size_t> acknowledgements;
+  // std::mutex acknowledgementsMutex;
+  // std::map<LogIndex, size_t> acknowledgements;
 
   std::condition_variable logUpdates;
   size_t quorumThreshold;
+
+  // tracks how up-to-date the log of each follower is - only used during leadership
+  std::mutex nextIndexMutex;
+  std::vector<LogIndex> nextIndex;
+  void updateNextIndex(RaftServerID machine, LogIndex index);
 
   std::vector<XrdRedisRaftTalker*> talkers;
 

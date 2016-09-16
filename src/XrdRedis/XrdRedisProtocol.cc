@@ -379,8 +379,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       if(request.size() != 3) return SendErrArgs(command);
 
       if(raft) {
-        raft->pushUpdate(request);
-        return SendErr("yo");
+        return Send(raft->pushUpdate(request).get());
       }
 
       XrdRedisStatus st = backend->set(*request[1], *request[2]);
@@ -657,6 +656,17 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       return SendErr("an unknown error occurred when dispatching the command");
     }
   }
+}
+
+int XrdRedisProtocol::Send(redisReplyPtr reply) {
+  if(reply->type == REDIS_REPLY_STATUS) {
+    Link->Send("+", 1);
+    Link->Send(reply->str, reply->len);
+    return Link->Send("\r\n", 2);
+  }
+
+  std::cout << "unknown reply type" << std::endl;
+  std::terminate();
 }
 
 int XrdRedisProtocol::SendNumber(int number) {

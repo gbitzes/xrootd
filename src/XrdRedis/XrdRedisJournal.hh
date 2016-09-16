@@ -24,7 +24,11 @@
 
 #include "XrdRedisCommon.hh"
 #include "XrdRedisBackend.hh"
+#include "XrdRedisTunnel.hh"
+
 #include <mutex>
+#include <map>
+#include <future>
 
 class XrdRedisJournal2 {
 private:
@@ -106,6 +110,9 @@ public:
   std::pair<LogIndex, RaftTerm> leaderAppend(XrdRedisRequest &req);
 
   void applyCommits();
+
+  std::map<LogIndex, std::promise<redisReplyPtr>> pendingReplies;
+  std::pair<LogIndex, std::future<redisReplyPtr>> leaderAppend2(XrdRedisRequest &req);
 
   // XrdRedisStatus create(const std::string &filename);
   // XrdRedisStatus initialize(const std::string &filename);

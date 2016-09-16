@@ -21,7 +21,9 @@
 
 #include "XrdRedisRaft.hh"
 #include "XrdRedisUtil.hh"
+
 #include <random>
+#include <algorithm>
 
 static XrdRedisStatus OK() {
   return XrdRedisStatus(rocksdb::Status::kOk);
@@ -185,6 +187,11 @@ static std::pair<RaftTerm, bool> processAppendEntriesReply(redisReplyPtr &reply)
   return {term, success};
 }
 
+std::string XrdRedisRaft::getLeader() {
+  if(leader >= 0) return SSTR(participants[leader].hostname << ":" << participants[leader].port);
+  return "";
+}
+
 // I'm a master, send updates / heartbeats to a specific follower
 void XrdRedisRaft::monitorFollower(RaftServerID machine) {
   assert(follower != myselfID);
@@ -215,12 +222,16 @@ void XrdRedisRaft::monitorFollower(RaftServerID machine) {
       fut = talkers[machine]->sendAppendEntries(journal.getCurrentTerm(), myselfID, nextIndex-1, prevTerm, journal.getCommitIndex(), entry, entryTerm);
       reply = fut.get();
       outcome = processAppendEntriesReply(reply);
-      if(outcome.second) nextIndex++;
+      if(outcome.second) {
+        nextIndex++;
+        updateNextIndex(machine, nextIndex);
+      }
     }
 
     if(!outcome.second && nextIndex > 1 && reply) {
       // BUG: only decrement on entry mismatch
       nextIndex--;
+      updateNextIndex(machine, nextIndex); // should not really be necessary
     }
 
     updateTermIfNecessary(outcome.first, -1);
@@ -241,6 +252,19 @@ void XrdRedisRaft::monitorLeader() {
   }
 }
 
+void XrdRedisRaft::updateNextIndex(RaftServerID machine, LogIndex index) {
+  std::lock_guard<std::mutex> lock(nextIndexMutex);
+
+  nextIndex[machine] = index;
+
+  std::vector<LogIndex> sortedNextIndex = nextIndex;
+  std::sort(sortedNextIndex.begin(), sortedNextIndex.end());
+
+  size_t threshold = participants.size() - quorumThreshold;
+  journal.setCommitIndex(sortedNextIndex[threshold] - 1);
+  journal.applyCommits();
+}
+
 void XrdRedisRaft::monitor() {
   // things are a bit volatile in the beginning, maybe the request processing
   // threads have not started yet. Avoid being too agressive into becoming
@@ -257,9 +281,13 @@ void XrdRedisRaft::monitor() {
       performElection();
     }
 
-    // I'm leader - send heartbeats
+    // I'm leader - launch one thread for every follower so as to keep them up-to-date
+    // and send heartbeats when necessary
     while(raftState == RaftState::leader) {
-      acknowledgements.clear();
+      nextIndex.clear();
+      for(size_t i = 0; i < participants.size(); i++) {
+        nextIndex.push_back(journal.getLogSize());
+      }
 
       std::vector<std::thread> monitors;
 
@@ -360,11 +388,11 @@ void XrdRedisRaft::triggerPanic() {
   panic();
 }
 
-XrdRedisStatus XrdRedisRaft::pushUpdate(XrdRedisRequest &req) {
-  std::pair<LogIndex, RaftTerm> pair = journal.leaderAppend(req);
-  journal.setCommitIndex(pair.first); // BUG !!!!! must verify followers have acked this
-  journal.applyCommits();
-  return OK();
+std::future<redisReplyPtr> XrdRedisRaft::pushUpdate(XrdRedisRequest &req) {
+  // TODO: lock here or in leaderAppend?
+  std::pair<LogIndex, std::future<redisReplyPtr>> pair = journal.leaderAppend2(req);
+  updateNextIndex(myselfID, pair.first+1);
+  return std::move(pair.second);
 }
 
 std::vector<std::string> XrdRedisRaft::appendEntries(RaftTerm term, RaftServerID leaderId, LogIndex prevIndex, RaftTerm prevTerm,
