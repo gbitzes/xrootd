@@ -107,12 +107,12 @@ public:
 
   XrdRedisStatus fetchTerm(LogIndex index, RaftTerm &term);
   XrdRedisStatus fetch(LogIndex index, RaftTerm &term, XrdRedisRequest &cmd);
-  std::pair<LogIndex, RaftTerm> leaderAppend(XrdRedisRequest &req);
 
   void applyCommits();
 
+  std::mutex pendingRepliesMutex;
   std::map<LogIndex, std::promise<redisReplyPtr>> pendingReplies;
-  std::pair<LogIndex, std::future<redisReplyPtr>> leaderAppend2(XrdRedisRequest &req);
+  std::pair<LogIndex, std::future<redisReplyPtr>> leaderAppend(XrdRedisRequest &req);
 
   // XrdRedisStatus create(const std::string &filename);
   // XrdRedisStatus initialize(const std::string &filename);

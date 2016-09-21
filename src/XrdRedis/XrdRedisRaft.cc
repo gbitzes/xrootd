@@ -156,6 +156,7 @@ void XrdRedisRaft::performElection() {
   else {
     std::cout << "RAFT: election round for " << newTerm << " failed, only " << acks << " votes. :-(" << std::endl;
     std::this_thread::sleep_for(randomTimeout);
+    if(raftState != RaftState::candidate) return;
   }
 }
 
@@ -192,12 +193,81 @@ std::string XrdRedisRaft::getLeader() {
   return "";
 }
 
+// rapid-fire many append entries
+std::tuple<RaftTerm, bool, LogIndex> XrdRedisRaft::pipelineAppendEntries(RaftServerID machine, LogIndex nextIndex, RaftTerm prevTerm, bool prevFailed) {
+  LogIndex startIndex = nextIndex;
+  LogIndex lastIndex = std::min(journal.getLogSize(), nextIndex + 100);
+  if(prevFailed) lastIndex = startIndex+1;
+  RaftTerm currentTerm = journal.getCurrentTerm();
+
+  // std::cout << "startIndex: " << startIndex << std::endl;
+  // std::cout << "lastIndex: " << lastIndex << std::endl;
+  // std::cout << "number of pipelined requests: " << lastIndex - startIndex << std::endl;
+  // std::cout << "prevFailed: " << prevFailed << std::endl;
+
+  std::vector<std::future<redisReplyPtr>> fut;
+  std::pair<RaftTerm, bool> outcome;
+
+  // size_t futuresProcessed = 0;
+
+  for(LogIndex index = startIndex; index < lastIndex; index++) {
+    RaftTerm entryTerm;
+    XrdRedisRequest entry;
+    journal.fetch(index, entryTerm, entry);
+    // std::cout << "appending index: " << index << std::endl;
+    fut.push_back(talkers[machine]->sendAppendEntries(currentTerm, myselfID, index-1, prevTerm, journal.getCommitIndex(), entry, entryTerm));
+    prevTerm = entryTerm;
+
+    // check if any replies have arrived
+    // while(futuresProcessed < fut.size()) {
+    //   if(!prevFailed) lastIndex = journal.getLogSize();
+    //
+    //   if(index != lastIndex-1 && fut[futuresProcessed].wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+    //     break;
+    //   }
+    //
+    //   redisReplyPtr reply = fut[futuresProcessed].get();
+    //   outcome = processAppendEntriesReply(reply);
+    //   if(outcome.second) {
+    //     // std::cout << "updating nextIndex to " << nextIndex + futuresProcessed + 1 << std::endl;
+    //     updateNextIndex(machine, nextIndex+futuresProcessed+1);
+    //     futuresProcessed++;
+    //   }
+    //   else {
+    //     return std::make_tuple(outcome.first, outcome.second, nextIndex+futuresProcessed-1);
+    //   }
+    // }
+
+    // if(!prevFailed) lastIndex = journal.getLogSize();
+  }
+
+  std::cout << "ended up pipelining " << lastIndex - startIndex << " requests" << std::endl;
+
+  for(size_t i = 0; i < fut.size(); i++) {
+    redisReplyPtr reply = fut[i].get();
+    outcome = processAppendEntriesReply(reply);
+    // std::cout << machine << " replied: " << outcome.first << ", " << outcome.second << std::endl;
+    if(outcome.second) {
+      updateNextIndex(machine, nextIndex+i+1);
+    }
+    else {
+      return std::make_tuple(outcome.first, outcome.second, nextIndex+i-1);
+    }
+  }
+
+  return std::make_tuple(outcome.first, true, lastIndex);
+
+}
+
 // I'm a master, send updates / heartbeats to a specific follower
 void XrdRedisRaft::monitorFollower(RaftServerID machine) {
+  std::unique_lock<std::mutex> lock(logUpdatedMutex, std::defer_lock);
+
   assert(follower != myselfID);
   std::cout << "starting monitoring thread for " << machine << std::endl;
 
   LogIndex nextIndex = journal.getLogSize();
+  bool prevFailed = false;
 
   while(raftState == RaftState::leader) {
     talkers[machine]->sendHandshake(journal.getClusterID(), participants);
@@ -216,17 +286,26 @@ void XrdRedisRaft::monitorFollower(RaftServerID machine) {
       outcome = processAppendEntriesReply(reply);
     }
     else {
-      RaftTerm entryTerm;
-      XrdRedisRequest entry;
-      journal.fetch(nextIndex, entryTerm, entry);
-      fut = talkers[machine]->sendAppendEntries(journal.getCurrentTerm(), myselfID, nextIndex-1, prevTerm, journal.getCommitIndex(), entry, entryTerm);
-      reply = fut.get();
-      outcome = processAppendEntriesReply(reply);
-      if(outcome.second) {
-        nextIndex++;
-        updateNextIndex(machine, nextIndex);
-      }
+      std::tuple<RaftTerm, bool, LogIndex> res = pipelineAppendEntries(machine, nextIndex, prevTerm, prevFailed);
+      outcome.first = std::get<0>(res);
+      outcome.second = std::get<1>(res);
+      nextIndex = std::get<2>(res);
+
+      // std::cout << "outcome - " << outcome.first << ", " << outcome.second << std::endl;
+      // std::cout << "nextIndex: " << nextIndex << std::endl;
+
+      // XrdRedisRequest entry;
+      // journal.fetch(nextIndex, entryTerm, entry);
+      // fut = talkers[machine]->sendAppendEntries(journal.getCurrentTerm(), myselfID, nextIndex-1, prevTerm, journal.getCommitIndex(), entry, entryTerm);
+      // reply = fut.get();
+      // outcome = processAppendEntriesReply(reply);
+      // if(outcome.second) {
+      //   nextIndex++;
+      //   updateNextIndex(machine, nextIndex);
+      //  }
     }
+
+    prevFailed = !outcome.second;
 
     if(!outcome.second && nextIndex > 1 && reply) {
       // BUG: only decrement on entry mismatch
@@ -235,7 +314,14 @@ void XrdRedisRaft::monitorFollower(RaftServerID machine) {
     }
 
     updateTermIfNecessary(outcome.first, -1);
-    std::this_thread::sleep_for(timeoutLow);
+
+    if(nextIndex == journal.getLogSize()) {
+      lock.lock();
+      logUpdated.wait_for(lock, heartbeatInterval);
+      lock.unlock();
+    } else {
+      // std::cout << "rapid-fire pushing to " << machine << std::endl;
+    }
   }
   std::cout << "shutting down monitoring thread for " << machine << std::endl;
 }
@@ -269,7 +355,9 @@ void XrdRedisRaft::monitor() {
   // things are a bit volatile in the beginning, maybe the request processing
   // threads have not started yet. Avoid being too agressive into becoming
   // a candidate, and wait a bit at the beginning
-  std::this_thread::sleep_for(std::chrono::seconds(1));
+  std::this_thread::sleep_for(std::chrono::seconds(3));
+  struct sched_param params;
+  params.sched_priority = 50;
 
   while(raftState != RaftState::shutdown) {
     // make sure I'm receiving heartbeats from the leader
@@ -294,6 +382,7 @@ void XrdRedisRaft::monitor() {
       for(size_t i = 0; i < participants.size(); i++) {
         if( (RaftServerID) i != myselfID) {
           monitors.emplace_back(&XrdRedisRaft::monitorFollower, this, i);
+          pthread_setschedparam(monitors[monitors.size()-1].native_handle(), SCHED_FIFO, &params);
         }
       }
 
@@ -366,6 +455,7 @@ void XrdRedisRaft::updateTermIfNecessary(RaftTerm term, RaftServerID newLeader) 
     leader = newLeader;
     stateTransition(RaftState::follower);
     declareTerm(journal.getCurrentTerm(), newLeader);
+    lastAppend = std::chrono::steady_clock::now(); // cool off a bit before trying to become a leader
   }
   else if(leader == -1) {
     leader = newLeader;
@@ -389,9 +479,12 @@ void XrdRedisRaft::triggerPanic() {
 }
 
 std::future<redisReplyPtr> XrdRedisRaft::pushUpdate(XrdRedisRequest &req) {
+  std::lock_guard<std::mutex> lock(updating);
+
   // TODO: lock here or in leaderAppend?
-  std::pair<LogIndex, std::future<redisReplyPtr>> pair = journal.leaderAppend2(req);
+  std::pair<LogIndex, std::future<redisReplyPtr>> pair = journal.leaderAppend(req);
   updateNextIndex(myselfID, pair.first+1);
+  logUpdated.notify_all();
   return std::move(pair.second);
 }
 

@@ -97,8 +97,8 @@ static std::atomic<int> slow(0);
 
 #define TRACELINK lp
 int XrdRedisProtocol::Process(XrdLink *lp) {
-  auto now = std::chrono::steady_clock::now();
-  std::chrono::duration<double> diff = now - prev_process;
+  // auto now = std::chrono::steady_clock::now();
+  // std::chrono::duration<double> diff = now - prev_process;
   TRACEI(DEBUG, " Process. lp:" << lp);
 
   if(buffers.size() == 0 || !buffers[0]->buff || !buffers[0]->bsize) {
@@ -128,7 +128,7 @@ int XrdRedisProtocol::Process(XrdLink *lp) {
     auto end = std::chrono::steady_clock::now();
     std::chrono::duration<double> diff = end-start;
     if(diff.count() > 0.01) {
-      std::cout << "Request took " << diff.count() << "s. Slow requests so far: " << slow << "\n";
+      // std::cout << "Request took " << diff.count() << "s. Slow requests so far: " << slow << "\n";
       slow++;
     }
 
@@ -577,7 +577,11 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       return SendOK();
     }
     case XrdRedisCommand::RAFT_APPEND_ENTRY: {
-      if(!authorized_for_raft) return SendErr("not authorized to issue raft commands");
+      if(!authorized_for_raft) {
+        std::cout << "Rejecting RAFT_APPEND_ENTRY - no handshake" << std::endl;
+        return SendErr("not authorized to issue raft commands");
+      }
+
       if(request.size() < 8) return SendErrArgs(command);
 
       RaftTerm term;
@@ -606,7 +610,10 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       return SendArray(raft->appendEntries(term, server, prevlog, prevterm, req, entryTerm, leaderCommit));
     }
     case XrdRedisCommand::RAFT_REQUEST_VOTE: {
-      if(!authorized_for_raft) return SendErr("not authorized to issue raft commands");
+      if(!authorized_for_raft) {
+        std::cout << "Rejecting RAFT_REQUEST_VOTE - no handshake" << std::endl;
+        return SendErr("not authorized to issue raft commands");
+      }
       if(request.size() != 5) return SendErrArgs(command);
 
       RaftTerm term;

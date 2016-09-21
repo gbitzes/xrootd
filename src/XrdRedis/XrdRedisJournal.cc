@@ -121,15 +121,18 @@ static redisReplyPtr redis_reply_ok() {
 }
 
 void XrdRedisJournal2::applyCommits() {
+  std::unique_lock<std::mutex> lock(pendingRepliesMutex, std::defer_lock);
+
   while(lastApplied < commitIndex && commitIndex < logSize) {
-    std::cout << "commiting " << lastApplied+1 << " to state machine" << std::endl;
+    // std::cout << "commiting " << lastApplied+1 << " to state machine" << std::endl;
 
     XrdRedisRequest cmd;
     RaftTerm term;
 
     fetch(lastApplied+1, term, cmd);
-
+    lock.lock();
     auto it = pendingReplies.find(lastApplied+1);
+    lock.unlock();
 
     if(*cmd[0] == "SET" || *cmd[0] == "set") {
       storage->set(*cmd[1], *cmd[2]);
@@ -141,9 +144,11 @@ void XrdRedisJournal2::applyCommits() {
       std::terminate();
     }
 
+    lock.lock();
     if(it != pendingReplies.end()) {
       pendingReplies.erase(it);
     }
+    lock.unlock();
 
     setLastApplied(lastApplied+1);
   }
@@ -249,37 +254,25 @@ static std::string serializeRedisRequest(RaftTerm term, const XrdRedisRequest &c
   return ss.str();
 }
 
-std::pair<LogIndex, std::future<redisReplyPtr>> XrdRedisJournal2::leaderAppend2(XrdRedisRequest &req) {
+std::pair<LogIndex, std::future<redisReplyPtr>> XrdRedisJournal2::leaderAppend(XrdRedisRequest &req) {
   LogIndex index = logSize;
   rawAppend(currentTerm, index, req);
   setLogSize(logSize+1);
 
+  std::lock_guard<std::mutex> lock(pendingRepliesMutex);
   auto resp = pendingReplies.emplace(std::make_pair(index, std::promise<redisReplyPtr>()));
   return {index, resp.first->second.get_future()};
 }
 
-// unconditionally append an entry to the log and return its index, along with the term of the *previous* entry
-std::pair<LogIndex, RaftTerm> XrdRedisJournal2::leaderAppend(XrdRedisRequest &req) {
-  LogIndex index = logSize;
-  rawAppend(currentTerm, index, req);
-  setLogSize(logSize+1);
-
-  RaftTerm previousTerm;
-  XrdRedisRequest tmp;
-
-  fetch(index-1, previousTerm, tmp);
-  return {index, previousTerm}; // BUG
-}
-
 XrdRedisStatus XrdRedisJournal2::rawAppend(RaftTerm term, LogIndex index, XrdRedisRequest &cmd) {
-  std::cout << "rawAppend - term " << term << " index " << index << ": ";
-  for(size_t i = 0; i < cmd.size(); i++) {
-    std::cout << *cmd[i] << " ";
-  }
-  std::cout << std::endl;
+  // std::cout << "rawAppend - term " << term << " index " << index << ": ";
+  // for(size_t i = 0; i < cmd.size(); i++) {
+  //   std::cout << *cmd[i] << " ";
+  // }
+  // std::cout << std::endl;
 
   XrdRedisStatus st = storage->set(SSTR("REVISION_" << index), serializeRedisRequest(term, cmd));
-  std::cout << st.ToString() << std::endl;
+  // std::cout << st.ToString() << std::endl;
   return st;
 }
 

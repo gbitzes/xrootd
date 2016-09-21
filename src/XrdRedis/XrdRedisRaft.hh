@@ -109,7 +109,10 @@ private:
   // std::mutex acknowledgementsMutex;
   // std::map<LogIndex, size_t> acknowledgements;
 
-  std::condition_variable logUpdates;
+  std::mutex updating;
+
+  std::mutex logUpdatedMutex;
+  std::condition_variable logUpdated;
   size_t quorumThreshold;
 
   // tracks how up-to-date the log of each follower is - only used during leadership
@@ -140,6 +143,7 @@ private:
   void becomeLeader();
   void performElection();
 
+  std::tuple<RaftTerm, bool, LogIndex> pipelineAppendEntries(RaftServerID machine, LogIndex nextIndex, RaftTerm prevTerm, bool prevFailed);
 
   size_t processVotes(std::vector<std::future<redisReplyPtr>> &replies);
 
@@ -153,9 +157,9 @@ private:
 
   std::thread monitorThread;
 
-  std::chrono::milliseconds heartbeatInterval{75};
-  std::chrono::milliseconds timeoutLow{200};
-  std::chrono::milliseconds timeoutHigh{300};
+  std::chrono::milliseconds heartbeatInterval{200};
+  std::chrono::milliseconds timeoutLow{800};
+  std::chrono::milliseconds timeoutHigh{1000};
 
   std::chrono::milliseconds randomTimeout;
 
