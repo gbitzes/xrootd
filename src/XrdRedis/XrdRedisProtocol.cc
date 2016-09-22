@@ -25,7 +25,7 @@
 #include "XrdRedisSTL.hh"
 #include "XrdRedisRocksDB.hh"
 #include "XrdRedisTunnel.hh"
-#include "XrdRedisReplicator.hh"
+#include "XrdRedisUtil.hh"
 #include "XrdOuc/XrdOucEnv.hh"
 #include <stdlib.h>
 #include <algorithm>
@@ -1003,46 +1003,6 @@ int XrdRedisProtocol::Configure(char *parms, XrdProtocol_Config * pi) {
     }
     backend = rocksdb;
   }
-
-  // else if(primary == "replicator") {
-  //   if(dbpath.empty()) {
-  //     eDest.Emsg("Config", "redis.dbpath required when the primary datastore is rocksdb");
-  //     return 0;
-  //   }
-  //
-  //   XrdRedisRocksDB *rocksdb = new XrdRedisRocksDB();
-  //   XrdRedisStatus st = rocksdb->initialize(dbpath);
-  //   if(!st.ok()) {
-  //     eDest.Emsg("Config", SSTR("error while opening the db: " << st.ToString()).c_str());
-  //     return 0;
-  //   }
-  //
-  //   if(replicas.empty()) {
-  //     eDest.Emsg("Config", "redis.replicas required with a replicator");
-  //     return 0;
-  //   }
-  //
-  //   std::vector<std::string> reps = split(replicas, ",");
-  //   std::vector<XrdRedisBackend*> replicaBackends;
-  //   for(size_t i = 0; i < reps.size(); i++) {
-  //     std::vector<std::string> replica = split(reps[i], ":");
-  //
-  //     if(replica.size() != 2) {
-  //       eDest.Emsg("Config", "malformed redis.replicas");
-  //       return 0;
-  //     }
-  //
-  //     int64_t port;
-  //     if(!my_strtoll(replica[1], port)) {
-  //       eDest.Emsg("Config", "malformed redis.replicas");
-  //       return 0;
-  //     }
-  //
-  //     replicaBackends.push_back(new XrdRedisTunnel(replica[0], port));
-  //   }
-  //
-  //   backend = new XrdRedisReplicator(rocksdb, replicaBackends);
-  // }
   else {
     eDest.Emsg("Config", "unknown option for redis.primary, unable to continue");
     return 0;

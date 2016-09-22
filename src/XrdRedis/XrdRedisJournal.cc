@@ -26,7 +26,7 @@ static XrdRedisStatus OK() {
   return XrdRedisStatus(rocksdb::Status::kOk);
 }
 
-XrdRedisStatus XrdRedisJournal2::retrieve(const std::string &key, int64_t &value) {
+XrdRedisStatus XrdRedisJournal::retrieve(const std::string &key, int64_t &value) {
   std::string tmp;
   XrdRedisStatus st = storage->get(key, tmp);
   if(!st.ok()) return XrdRedisStatus(rocksdb::Status::kCorruption, SSTR("unable to retrieve " << key));
@@ -37,7 +37,7 @@ XrdRedisStatus XrdRedisJournal2::retrieve(const std::string &key, int64_t &value
   return OK();
 }
 
-XrdRedisJournal2::XrdRedisJournal2(XrdRedisBackend *store, RaftClusterID id) : storage(store), clusterID(id) {
+XrdRedisJournal::XrdRedisJournal(XrdRedisBackend *store, RaftClusterID id) : storage(store), clusterID(id) {
   // make sure the cluster's ID matches, should catch misconfiguration errors
   RaftClusterID clust;
   XrdRedisStatus st = storage->get("RAFT_CLUSTER_ID", clust);
@@ -73,7 +73,7 @@ XrdRedisJournal2::XrdRedisJournal2(XrdRedisBackend *store, RaftClusterID id) : s
   }
 }
 
-bool XrdRedisJournal2::requestVote(RaftTerm term, int64_t candidateId, LogIndex lastIndex, RaftTerm lastTerm) {
+bool XrdRedisJournal::requestVote(RaftTerm term, int64_t candidateId, LogIndex lastIndex, RaftTerm lastTerm) {
   if(currentTerm > term) {
     std::cout << "I know of a newer term, rejecting request vote." << std::endl;
     return false;
@@ -102,7 +102,7 @@ bool XrdRedisJournal2::requestVote(RaftTerm term, int64_t candidateId, LogIndex 
   return true;
 }
 
-XrdRedisStatus XrdRedisJournal2::setCurrentTerm(RaftTerm term) {
+XrdRedisStatus XrdRedisJournal::setCurrentTerm(RaftTerm term) {
   XrdRedisStatus st = storage->set("RAFT_CURRENT_TERM", SSTR(term));
   if(st.ok()) currentTerm = term;
   else return st;
@@ -120,7 +120,7 @@ static redisReplyPtr redis_reply_ok() {
   return redisReplyPtr(r, freeReplyObject);
 }
 
-void XrdRedisJournal2::applyCommits() {
+void XrdRedisJournal::applyCommits() {
   std::unique_lock<std::mutex> lock(pendingRepliesMutex, std::defer_lock);
 
   while(lastApplied < commitIndex && commitIndex < logSize) {
@@ -154,24 +154,24 @@ void XrdRedisJournal2::applyCommits() {
   }
 }
 
-XrdRedisStatus XrdRedisJournal2::setVotedFor(RaftServerID vote) {
+XrdRedisStatus XrdRedisJournal::setVotedFor(RaftServerID vote) {
   XrdRedisStatus st = storage->set("RAFT_VOTED_FOR", SSTR(vote));
   if(st.ok()) votedFor = vote;
   return st;
 }
 
-XrdRedisStatus XrdRedisJournal2::setLastApplied(LogIndex index) {
+XrdRedisStatus XrdRedisJournal::setLastApplied(LogIndex index) {
   XrdRedisStatus st = storage->set("RAFT_LAST_APPLIED", SSTR(index));
   if(st.ok()) lastApplied = index;
   return st;
 }
 
-XrdRedisJournal2::~XrdRedisJournal2() {
+XrdRedisJournal::~XrdRedisJournal() {
   delete storage;
 }
 
 // check whether there's an entry in the log and has the specified term
-bool XrdRedisJournal2::entryExists(RaftTerm term, LogIndex revision) {
+bool XrdRedisJournal::entryExists(RaftTerm term, LogIndex revision) {
   std::string tmp;
   XrdRedisStatus st = storage->get(SSTR("REVISION_" << revision), tmp);
   if(!st.ok()) {
@@ -191,7 +191,7 @@ bool XrdRedisJournal2::entryExists(RaftTerm term, LogIndex revision) {
 }
 
 
-void XrdRedisJournal2::removeInconsistent(LogIndex start) {
+void XrdRedisJournal::removeInconsistent(LogIndex start) {
   // TODO: take care of pendingReplies
   std::cout << "Major raft event: remove inconsistent entries, from " << start << " to the end, " << logSize << std::endl;
   for(LogIndex i = start; i < logSize; i++) {
@@ -203,13 +203,13 @@ void XrdRedisJournal2::removeInconsistent(LogIndex start) {
   setLogSize(start);
 }
 
-XrdRedisStatus XrdRedisJournal2::setLogSize(const LogIndex newsize) {
+XrdRedisStatus XrdRedisJournal::setLogSize(const LogIndex newsize) {
   XrdRedisStatus st = storage->set("RAFT_LOG_SIZE", SSTR(newsize));
   if(st.ok()) logSize = newsize;
   return st;
 }
 
-void XrdRedisJournal2::setCommitIndex(LogIndex index) {
+void XrdRedisJournal::setCommitIndex(LogIndex index) {
   commitIndex = index;
 }
 
@@ -254,7 +254,7 @@ static std::string serializeRedisRequest(RaftTerm term, const XrdRedisRequest &c
   return ss.str();
 }
 
-std::pair<LogIndex, std::future<redisReplyPtr>> XrdRedisJournal2::leaderAppend(XrdRedisRequest &req) {
+std::pair<LogIndex, std::future<redisReplyPtr>> XrdRedisJournal::leaderAppend(XrdRedisRequest &req) {
   LogIndex index = logSize;
   rawAppend(currentTerm, index, req);
   setLogSize(logSize+1);
@@ -264,7 +264,7 @@ std::pair<LogIndex, std::future<redisReplyPtr>> XrdRedisJournal2::leaderAppend(X
   return {index, resp.first->second.get_future()};
 }
 
-XrdRedisStatus XrdRedisJournal2::rawAppend(RaftTerm term, LogIndex index, XrdRedisRequest &cmd) {
+XrdRedisStatus XrdRedisJournal::rawAppend(RaftTerm term, LogIndex index, XrdRedisRequest &cmd) {
   // std::cout << "rawAppend - term " << term << " index " << index << ": ";
   // for(size_t i = 0; i < cmd.size(); i++) {
   //   std::cout << *cmd[i] << " ";
@@ -276,7 +276,7 @@ XrdRedisStatus XrdRedisJournal2::rawAppend(RaftTerm term, LogIndex index, XrdRed
   return st;
 }
 
-XrdRedisStatus XrdRedisJournal2::fetchTerm(LogIndex index, RaftTerm &term) {
+XrdRedisStatus XrdRedisJournal::fetchTerm(LogIndex index, RaftTerm &term) {
   std::string data;
   XrdRedisStatus st = storage->get(SSTR("REVISION_" << index), data);
   // TODO: investigate whether I can only retrieve the first few bytes of a value in rocksdb
@@ -286,7 +286,7 @@ XrdRedisStatus XrdRedisJournal2::fetchTerm(LogIndex index, RaftTerm &term) {
   return st;
 }
 
-XrdRedisStatus XrdRedisJournal2::fetch(LogIndex index, RaftTerm &term, XrdRedisRequest &cmd) {
+XrdRedisStatus XrdRedisJournal::fetch(LogIndex index, RaftTerm &term, XrdRedisRequest &cmd) {
   std::string data;
   XrdRedisStatus st = storage->get(SSTR("REVISION_" << index), data);
   if(!st.ok()) return st;
@@ -295,7 +295,7 @@ XrdRedisStatus XrdRedisJournal2::fetch(LogIndex index, RaftTerm &term, XrdRedisR
   return OK();
 }
 
-XrdRedisStatus XrdRedisJournal2::append(RaftTerm prevTerm, LogIndex prevIndex, XrdRedisRequest &cmd, RaftTerm entryTerm) {
+XrdRedisStatus XrdRedisJournal::append(RaftTerm prevTerm, LogIndex prevIndex, XrdRedisRequest &cmd, RaftTerm entryTerm) {
   // entry already exists?
   if(logSize > prevIndex+1) {
     // TODO verify log entries have not been commited yet (very serious error)

@@ -50,7 +50,6 @@ if( ENABLE_REDIS )
     XrdRedis/XrdRedisProtocol.cc        XrdRedis/XrdRedisProtocol.hh
     XrdRedis/XrdRedisUtil.cc            XrdRedis/XrdRedisUtil.hh
     XrdRedis/XrdRedisTunnel.cc          XrdRedis/XrdRedisTunnel.hh
-    XrdRedis/XrdRedisReplicator.cc      XrdRedis/XrdRedisReplicator.hh
     XrdRedis/XrdRedisCommands.cc        XrdRedis/XrdRedisCommands.hh
     XrdRedis/XrdRedisRaft.cc            XrdRedis/XrdRedisRaft.hh
     XrdRedis/XrdRedisJournal.cc         XrdRedis/XrdRedisJournal.hh

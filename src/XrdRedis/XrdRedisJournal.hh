@@ -30,7 +30,7 @@
 #include <map>
 #include <future>
 
-class XrdRedisJournal2 {
+class XrdRedisJournal {
 private:
   struct JournalEntry {
     RaftTerm term;
@@ -65,8 +65,8 @@ private:
 
   XrdRedisStatus rawAppend(RaftTerm term, LogIndex index, XrdRedisRequest &cmd);
 public:
-  XrdRedisJournal2(XrdRedisBackend *store, RaftClusterID id);
-  ~XrdRedisJournal2();
+  XrdRedisJournal(XrdRedisBackend *store, RaftClusterID id);
+  ~XrdRedisJournal();
 
   RaftTerm getCurrentTerm() {
     return currentTerm;
@@ -113,55 +113,6 @@ public:
   std::mutex pendingRepliesMutex;
   std::map<LogIndex, std::promise<redisReplyPtr>> pendingReplies;
   std::pair<LogIndex, std::future<redisReplyPtr>> leaderAppend(XrdRedisRequest &req);
-
-  // XrdRedisStatus create(const std::string &filename);
-  // XrdRedisStatus initialize(const std::string &filename);
-
-  // XrdRedisStatus append(XrdRedisRequest& cmd, RaftTerm term, LogIndex revision);
 };
-
-// private:
-//   std::atomic<int64_t> revision;
-//   XrdRedisBackend *store;
-// public:
-//   struct JournalEntry {
-//     std::vector<std::string> items;
-//
-//     JournalEntry() {}
-//
-//     JournalEntry(const std::string &s1, const std::string &s2) {
-//       items.emplace_back(s1);
-//       items.emplace_back(s2);
-//     }
-//
-//     std::string toString() const {
-//       std::ostringstream ss;
-//       ss << items[0];
-//       for(size_t i = 1; i < items.size(); i++) {
-//         ss << " " << items[i];
-//       }
-//       return ss.str();
-//     }
-//
-//     void fromString(const std::string &str) {
-//       items = split(str, " ");
-//     }
-//   };
-//
-//   XrdRedisStatus pushUpdate(const JournalEntry &entry, int64_t &revision);
-//   XrdRedisStatus fetch(int64_t revision, JournalEntry &entry);
-//
-//   int64_t getRevision() {
-//     return revision;
-//   }
-//
-//   XrdRedisJournal(XrdRedisBackend *backend);
-//   XrdRedisStatus initialize();
-// };
-
-
-
-
-
 
 #endif

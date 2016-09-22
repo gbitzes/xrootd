@@ -128,8 +128,7 @@ private:
   RaftServerID leader{-1};
 
   std::atomic<RaftState> raftState{RaftState::follower};
-  XrdRedisJournal2 journal;
-  // XrdRedisBackend *journal; // we might want to change this in the future
+  XrdRedisJournal journal;
   XrdRedisBackend *stateMachine;
   std::vector<RaftServer> participants;
   RaftServer myself;
