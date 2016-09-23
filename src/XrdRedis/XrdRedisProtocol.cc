@@ -671,6 +671,11 @@ int XrdRedisProtocol::Send(redisReplyPtr reply) {
     Link->Send(reply->str, reply->len);
     return Link->Send("\r\n", 2);
   }
+  else if(reply->type == REDIS_REPLY_ERROR) {
+    Link->Send("-", 1);
+    Link->Send(reply->str, reply->len);
+    return Link->Send("\r\n", 2);
+  }
 
   std::cout << "unknown reply type" << std::endl;
   std::terminate();

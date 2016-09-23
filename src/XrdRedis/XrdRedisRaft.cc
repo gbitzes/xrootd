@@ -24,6 +24,7 @@
 
 #include <random>
 #include <algorithm>
+#include <set>
 
 static XrdRedisStatus OK() {
   return XrdRedisStatus(rocksdb::Status::kOk);
@@ -125,8 +126,7 @@ size_t XrdRedisRaft::processVotes(std::vector<std::future<redisReplyPtr>> &repli
 void XrdRedisRaft::performElection() {
   RaftTerm newTerm = journal.getCurrentTerm()+1;
 
-  journal.setCurrentTerm(newTerm);
-  journal.setVotedFor(myselfID);
+  journal.statusUpdate(newTerm, myselfID);
 
   LogIndex lastIndex = journal.getLogSize() - 1;
   RaftTerm lastTerm;
@@ -168,24 +168,30 @@ void XrdRedisRaft::updateRandomTimeout() {
   std::cout << "RAFT: setting random timeout to " << randomTimeout.count() << "ms" << std::endl;
 }
 
-static std::pair<RaftTerm, bool> processAppendEntriesReply(redisReplyPtr &reply) {
-  bool success = false;
-  RaftTerm term = -1;
+static AppendEntriesReply processAppendEntriesReply(redisReplyPtr &reply) {
+  AppendEntriesReply ret;
 
-  if(reply == nullptr) return {term, success};
-  if(reply->type != REDIS_REPLY_ARRAY) return {term, success};
+  if(reply == nullptr) return ret;
+  if(reply->type != REDIS_REPLY_ARRAY) {
+    std::cout << "RAFT critical error: " << " processAppendEntriesReply got a non-array reply" << std::endl;
+    return ret;
+  }
 
+  ret.online = true;
   for(size_t i = 0; i < reply->elements; i++) {
+    // std::cout << redis_reply_to_str(reply->element[i]) << std::endl;
     if(redis_reply_to_str(reply->element[i]) == "OUTCOME") {
-      success = (redis_reply_to_str(reply->element[i+1]) == "OK");
-      i += 1;
+      ret.success = (redis_reply_to_str(reply->element[i+1]) == "OK");
     }
     else if(redis_reply_to_str(reply->element[i]) == "TERM") {
-      my_strtoll(redis_reply_to_str(reply->element[i+1]), term);
+      my_strtoll(redis_reply_to_str(reply->element[i+1]), ret.term);
+    }
+    else if(redis_reply_to_str(reply->element[i]) == "LOG-SIZE") {
+      my_strtoll(redis_reply_to_str(reply->element[i+1]), ret.logSize);
     }
   }
 
-  return {term, success};
+  return ret;
 }
 
 std::string XrdRedisRaft::getLeader() {
@@ -193,28 +199,18 @@ std::string XrdRedisRaft::getLeader() {
   return "";
 }
 
-// rapid-fire many append entries
-std::tuple<RaftTerm, bool, LogIndex> XrdRedisRaft::pipelineAppendEntries(RaftServerID machine, LogIndex nextIndex, RaftTerm prevTerm, bool prevFailed) {
+// rapid-fire multiple append entries
+AppendEntriesReply XrdRedisRaft::pipelineAppendEntries(RaftServerID machine, LogIndex nextIndex, RaftTerm prevTerm, int pipelineLength) {
   LogIndex startIndex = nextIndex;
-  LogIndex lastIndex = std::min(journal.getLogSize(), nextIndex + 100);
-  if(prevFailed) lastIndex = startIndex+1;
+  LogIndex lastIndex = std::min(journal.getLogSize(), nextIndex + pipelineLength);
   RaftTerm currentTerm = journal.getCurrentTerm();
 
-  // std::cout << "startIndex: " << startIndex << std::endl;
-  // std::cout << "lastIndex: " << lastIndex << std::endl;
-  // std::cout << "number of pipelined requests: " << lastIndex - startIndex << std::endl;
-  // std::cout << "prevFailed: " << prevFailed << std::endl;
-
   std::vector<std::future<redisReplyPtr>> fut;
-  std::pair<RaftTerm, bool> outcome;
-
-  // size_t futuresProcessed = 0;
 
   for(LogIndex index = startIndex; index < lastIndex; index++) {
     RaftTerm entryTerm;
     XrdRedisRequest entry;
     journal.fetch(index, entryTerm, entry);
-    // std::cout << "appending index: " << index << std::endl;
     fut.push_back(talkers[machine]->sendAppendEntries(currentTerm, myselfID, index-1, prevTerm, journal.getCommitIndex(), entry, entryTerm));
     prevTerm = entryTerm;
 
@@ -241,98 +237,105 @@ std::tuple<RaftTerm, bool, LogIndex> XrdRedisRaft::pipelineAppendEntries(RaftSer
     // if(!prevFailed) lastIndex = journal.getLogSize();
   }
 
-  std::cout << "ended up pipelining " << lastIndex - startIndex << " requests" << std::endl;
+  if(lastIndex - startIndex > 1) {
+    std::cout << "ended up pipelining " << lastIndex - startIndex << " requests" << std::endl;
+  }
 
+  AppendEntriesReply outcome;
   for(size_t i = 0; i < fut.size(); i++) {
     redisReplyPtr reply = fut[i].get();
     outcome = processAppendEntriesReply(reply);
-    // std::cout << machine << " replied: " << outcome.first << ", " << outcome.second << std::endl;
-    if(outcome.second) {
+    if(outcome.success) {
       updateNextIndex(machine, nextIndex+i+1);
     }
     else {
-      return std::make_tuple(outcome.first, outcome.second, nextIndex+i-1);
+      return outcome;
     }
   }
 
-  return std::make_tuple(outcome.first, true, lastIndex);
-
+  return outcome;
 }
 
 // I'm a master, send updates / heartbeats to a specific follower
 void XrdRedisRaft::monitorFollower(RaftServerID machine) {
   std::unique_lock<std::mutex> lock(logUpdatedMutex, std::defer_lock);
-
   assert(follower != myselfID);
-  std::cout << "starting monitoring thread for " << machine << std::endl;
 
   LogIndex nextIndex = journal.getLogSize();
-  bool prevFailed = false;
+
+  int pipelineLength = 1;
 
   while(raftState == RaftState::leader) {
+    // std::cout << "nextIndex for " << machine << ": " << nextIndex << std::endl;
     talkers[machine]->sendHandshake(journal.getClusterID(), participants);
 
     RaftTerm prevTerm;
     XrdRedisRequest tmp;
     journal.fetch(nextIndex-1, prevTerm, tmp);
 
-    std::future<redisReplyPtr> fut;
-    redisReplyPtr reply;
-
-    std::pair<RaftTerm, bool> outcome;
+    AppendEntriesReply outcome;
     if(nextIndex == journal.getLogSize()) {
-      fut = talkers[machine]->sendHeartbeat(journal.getCurrentTerm(), myselfID, nextIndex-1, prevTerm, journal.getCommitIndex());
-      reply = fut.get();
+      std::future<redisReplyPtr> fut = talkers[machine]->sendHeartbeat(journal.getCurrentTerm(), myselfID, nextIndex-1, prevTerm, journal.getCommitIndex());
+      redisReplyPtr reply = fut.get();
       outcome = processAppendEntriesReply(reply);
     }
     else {
-      std::tuple<RaftTerm, bool, LogIndex> res = pipelineAppendEntries(machine, nextIndex, prevTerm, prevFailed);
-      outcome.first = std::get<0>(res);
-      outcome.second = std::get<1>(res);
-      nextIndex = std::get<2>(res);
-
-      // std::cout << "outcome - " << outcome.first << ", " << outcome.second << std::endl;
-      // std::cout << "nextIndex: " << nextIndex << std::endl;
-
-      // XrdRedisRequest entry;
-      // journal.fetch(nextIndex, entryTerm, entry);
-      // fut = talkers[machine]->sendAppendEntries(journal.getCurrentTerm(), myselfID, nextIndex-1, prevTerm, journal.getCommitIndex(), entry, entryTerm);
-      // reply = fut.get();
-      // outcome = processAppendEntriesReply(reply);
-      // if(outcome.second) {
-      //   nextIndex++;
-      //   updateNextIndex(machine, nextIndex);
-      //  }
+      outcome = pipelineAppendEntries(machine, nextIndex, prevTerm, pipelineLength);
     }
 
-    prevFailed = !outcome.second;
+    // std::cout << "outcome from machine " << machine << ": online " << outcome.online  << " success " << outcome.success << " logSize " << outcome.logSize << " term " << outcome.term << std::endl;
 
-    if(!outcome.second && nextIndex > 1 && reply) {
-      // BUG: only decrement on entry mismatch
+    if(outcome.online && !outcome.success && nextIndex <= outcome.logSize) {
       nextIndex--;
-      updateNextIndex(machine, nextIndex); // should not really be necessary
+    }
+    else if(outcome.online && outcome.logSize > 0) {
+      nextIndex = outcome.logSize;
     }
 
-    updateTermIfNecessary(outcome.first, -1);
+    updateNextIndex(machine, nextIndex);
 
-    if(nextIndex == journal.getLogSize()) {
+    //   if(outcome.logSize < nextIndex) {
+    //     std::cout << "updating nextIndex to machine logSize: " << outcome.logSize << std::endl;
+    //     nextIndex = outcome.logSize;
+    //   }
+    //   else {
+    //     nextIndex--; // we have a conflict, move back
+    //   }
+    //   updateNextIndex(machine, nextIndex); // should not really be necessary...
+    // }
+
+    if(!outcome.success) pipelineLength = 1;
+    if(outcome.success && pipelineLength < 4096) {
+      pipelineLength *= 2;
+    }
+
+    updateTermIfNecessary(outcome.term, -1);
+
+    bool sleepUntilNextRound = true;
+
+    if(outcome.online && nextIndex < journal.getLogSize()) {
+      sleepUntilNextRound = false;
+    }
+
+    if(sleepUntilNextRound) {
       lock.lock();
       logUpdated.wait_for(lock, heartbeatInterval);
       lock.unlock();
-    } else {
-      // std::cout << "rapid-fire pushing to " << machine << std::endl;
+    }
+    else {
+      std::cout << "rapid-fire pushing to " << machine << std::endl;
     }
   }
-  std::cout << "shutting down monitoring thread for " << machine << std::endl;
 }
 
 // I'm a follower, monitor what the leader is doing
 void XrdRedisRaft::monitorLeader() {
   while(raftState == RaftState::follower) {
-    journal.applyCommits();
+    this->applyCommits();
 
     std::this_thread::sleep_for(randomTimeout);
     if(std::chrono::steady_clock::now() - lastAppend > randomTimeout) {
+      std::cout << "FOLLOWER: timeout" << std::endl;
       stateTransition(RaftState::candidate);
     }
   }
@@ -348,7 +351,7 @@ void XrdRedisRaft::updateNextIndex(RaftServerID machine, LogIndex index) {
 
   size_t threshold = participants.size() - quorumThreshold;
   journal.setCommitIndex(sortedNextIndex[threshold] - 1);
-  journal.applyCommits();
+  this->applyCommits();
 }
 
 void XrdRedisRaft::monitor() {
@@ -389,6 +392,8 @@ void XrdRedisRaft::monitor() {
       for(size_t i = 0; i < monitors.size(); i++) {
         monitors[i].join();
       }
+
+      clearPendingReplies();
     }
 
     updateRandomTimeout();
@@ -450,12 +455,11 @@ void XrdRedisRaft::declareTerm(RaftTerm newTerm, RaftServerID newLeader) {
 void XrdRedisRaft::updateTermIfNecessary(RaftTerm term, RaftServerID newLeader) {
   if(term > journal.getCurrentTerm()) {
     std::cout << "RAFT: transitioning from term " << journal.getCurrentTerm() << " to " << term << std::endl;
-    journal.setCurrentTerm(term);
-    journal.setVotedFor(newLeader);
+    journal.statusUpdate(term, newLeader);
     leader = newLeader;
     stateTransition(RaftState::follower);
     declareTerm(journal.getCurrentTerm(), newLeader);
-    lastAppend = std::chrono::steady_clock::now(); // cool off a bit before trying to become a leader
+    // lastAppend = std::chrono::steady_clock::now(); // cool off a bit before trying to become a leader
   }
   else if(leader == -1) {
     leader = newLeader;
@@ -465,7 +469,7 @@ void XrdRedisRaft::updateTermIfNecessary(RaftTerm term, RaftServerID newLeader) 
 
 void XrdRedisRaft::panic() {
   std::cout << "RAFT: PANIC mode!!! Advancing term by 100 and triggering re-election." << std::endl;
-  journal.setCurrentTerm(journal.getCurrentTerm() + 100);
+  journal.statusUpdate(journal.getCurrentTerm() + 100, -1);
   stateTransition(RaftState::candidate);
 }
 
@@ -478,21 +482,131 @@ void XrdRedisRaft::triggerPanic() {
   panic();
 }
 
+static redisReplyPtr redis_reply_err(const std::string &err) {
+  redisReply *r = (redisReply*) calloc(1, sizeof(redisReply));
+  r->type = REDIS_REPLY_ERROR;
+  r->len = err.size();
+  r->str = (char*) malloc( (r->len+1) * sizeof(char) );
+  strcpy(r->str, err.c_str());
+  return redisReplyPtr(r, freeReplyObject);
+}
+
 std::future<redisReplyPtr> XrdRedisRaft::pushUpdate(XrdRedisRequest &req) {
+  if(raftState != RaftState::leader) {
+    std::promise<redisReplyPtr> reply;
+    reply.set_value(redis_reply_err(SSTR("MOVED 0 " << getLeader())));
+    return reply.get_future();
+  }
+
   std::lock_guard<std::mutex> lock(updating);
 
-  // TODO: lock here or in leaderAppend?
-  std::pair<LogIndex, std::future<redisReplyPtr>> pair = journal.leaderAppend(req);
-  updateNextIndex(myselfID, pair.first+1);
+  LogIndex index = journal.append(req);
+
+  std::future<redisReplyPtr> ret;
+
+  std::unique_lock<std::mutex> lock2(pendingRepliesMutex);
+  auto resp = pendingReplies.emplace(std::make_pair(index, std::promise<redisReplyPtr>()));
+  ret = resp.first->second.get_future();
+  lock2.unlock();
+
+  updateNextIndex(myselfID, index+1);
   logUpdated.notify_all();
-  return std::move(pair.second);
+
+  return std::move(ret);
+}
+
+
+static redisReplyPtr redis_reply_ok() {
+  redisReply *r = (redisReply*) calloc(1, sizeof(redisReply));
+  r->type = REDIS_REPLY_STATUS;
+  r->len = 2;
+  r->str = (char*) malloc( (r->len+1) * sizeof(char));
+  strcpy(r->str, "OK");
+  return redisReplyPtr(r, freeReplyObject);
+}
+
+void XrdRedisRaft::clearPendingReplies() {
+  std::unique_lock<std::mutex> lock(pendingRepliesMutex, std::defer_lock);
+
+  for(auto it = pendingReplies.begin(); it != pendingReplies.end(); it++) {
+    it->second.set_value(redis_reply_err("unavailable"));
+    pendingReplies.erase(it);
+  }
+}
+
+
+void XrdRedisRaft::applyCommits() {
+  std::unique_lock<std::mutex> lock(pendingRepliesMutex, std::defer_lock);
+
+  while(journal.getLastApplied() < journal.getCommitIndex() && journal.getCommitIndex() < journal.getLogSize()) {
+    // std::cout << "commiting " << journal.getLastApplied()+1 << " to state machine" << std::endl;
+
+    XrdRedisRequest cmd;
+    RaftTerm term;
+
+    journal.fetch(journal.getLastApplied()+1, term, cmd);
+    lock.lock();
+    auto it = pendingReplies.find(journal.getLastApplied()+1);
+    lock.unlock();
+
+    if(*cmd[0] == "SET" || *cmd[0] == "set") {
+      stateMachine->set(*cmd[1], *cmd[2]);
+      if(it != pendingReplies.end()) {
+        it->second.set_value(redis_reply_ok());
+      }
+    }
+    else {
+      std::terminate();
+    }
+
+    lock.lock();
+    if(it != pendingReplies.end()) {
+      pendingReplies.erase(it);
+    }
+    lock.unlock();
+
+    journal.setLastApplied(journal.getLastApplied()+1);
+  }
+}
+
+XrdRedisStatus XrdRedisRaft::append(RaftTerm prevTerm, LogIndex prevIndex, XrdRedisRequest &cmd, RaftTerm entryTerm) {
+  // entry already exists?
+  if(prevIndex+1 < journal.getLogSize()) {
+    // TODO if entry has same raft index, maybe it's a duplicate message and we don't need to delete anything
+    // TODO take care of pendingReplies
+
+    std::cout << "RAFT: conflict, removing log entries [" << prevIndex+1 << "," << journal.getLogSize()-1 << "]" << std::endl;
+
+    if(prevIndex+1 <= journal.getCommitIndex()) {
+      std::cout << "RAFT stop-the-world error: tried to remove commited entries. Bye. (commitIndex = " << journal.getCommitIndex() << ")" << std::endl;
+      std::terminate();
+    }
+
+    // std::cout << "asked to remove entries from " << prevIndex+1 << " to " << journal.getLogSize()-1 << std::endl;
+    // std::cout << "getLogSize: " << journal.getLogSize() << std::endl;
+    // std::cout << "prevIndex: " << prevIndex << std::endl;
+    // std::terminate();
+
+    journal.removeEntries(prevIndex+1, journal.getLogSize()-1);
+    journal.setLogSize(prevIndex);
+  }
+
+  // don't add anything to the log if it's only a heartbeat
+  if(cmd.size() == 1 && strcasecmp(cmd[0]->c_str(), "HEARTBEAT") == 0) {
+    return OK();
+  }
+
+  XrdRedisStatus st = journal.rawAppend(entryTerm, prevIndex+1, cmd);
+  if(!st.ok()) return st;
+
+  st = journal.setLogSize(prevIndex + 2);
+  if(!st.ok()) return st;
+
+  return OK();
 }
 
 std::vector<std::string> XrdRedisRaft::appendEntries(RaftTerm term, RaftServerID leaderId, LogIndex prevIndex, RaftTerm prevTerm,
                                            XrdRedisRequest &req, RaftTerm entryTerm, LogIndex commit) {
-
-
-  ScopedAdder inflight(requestsInFlight);
   std::vector<std::string> ret;
 
   RaftTerm current = journal.getCurrentTerm();
@@ -505,7 +619,11 @@ std::vector<std::string> XrdRedisRaft::appendEntries(RaftTerm term, RaftServerID
   ret.emplace_back(SSTR(current));
 
   if(term < current) {
-    ret.emplace_back("OUTCOME FAIL");
+    ret.emplace_back("LOG-SIZE");
+    ret.emplace_back(SSTR(journal.getLogSize()));
+
+    ret.emplace_back("OUTCOME");
+    ret.emplace_back("FAIL");
     ret.emplace_back("My raft term is newer");
     return ret;
   }
@@ -514,34 +632,81 @@ std::vector<std::string> XrdRedisRaft::appendEntries(RaftTerm term, RaftServerID
 
   if(leader != leaderId) {
     std::cout << "SERIOUS WARNING: received appendEntries from unrecognized leader!!" << std::endl;
+    ret.emplace_back("LOG-SIZE");
+    ret.emplace_back(SSTR(journal.getLogSize()));
+
     ret.emplace_back("OUTCOME");
     ret.emplace_back("FAIL");
     ret.emplace_back("You are not the current leader!");
     this->triggerPanic();
+    return ret;
   }
 
-  journal.setCommitIndex(commit);
   lastAppend = std::chrono::steady_clock::now();
 
+  // std::cout << "checking if entry with index " << prevIndex << " has term " << prevTerm << std::endl;
+  // std::cout << "logSize: " << journal.getLogSize() << std::endl;
+
   if(!journal.entryExists(prevTerm, prevIndex)) {
+    ret.emplace_back("LOG-SIZE");
+    ret.emplace_back(SSTR(journal.getLogSize()));
+
     ret.emplace_back("OUTCOME");
     ret.emplace_back("FAIL");
     ret.emplace_back("Log entry mismatch");
     return ret;
   }
 
-  XrdRedisStatus st = journal.append(prevTerm, prevIndex, req, entryTerm);
+  XrdRedisStatus st = this->append(prevTerm, prevIndex, req, entryTerm);
+
+  ret.emplace_back("LOG-SIZE");
+  ret.emplace_back(SSTR(journal.getLogSize()));
 
   ret.emplace_back("OUTCOME");
+
+  // std::cout << "append outcome: " << st.ok() << std::endl;
+
   if(!st.ok()) {
     ret.emplace_back("FAIL");
     ret.emplace_back(st.ToString());
   }
   else {
     ret.emplace_back("OK");
+    journal.setCommitIndex(commit);
   }
 
   return ret;
+}
+
+
+bool XrdRedisRaft::decideOnVoteRequest(RaftTerm term, int64_t candidateId, LogIndex lastIndex, RaftTerm lastTerm) {
+  if(journal.getCurrentTerm() > term) {
+    std::cout << "I know of a newer term, rejecting request vote." << std::endl;
+    return false;
+  }
+
+  if(journal.getCurrentTerm() == term && journal.getVotedFor() != -1 && journal.getVotedFor() != candidateId) {
+    std::cout << "I've already voted for this term for " << journal.getVotedFor() << ", rejecting request vote." << std::endl;
+    return false;
+  }
+
+  RaftTerm myPrevTerm;
+  XrdRedisRequest cmd;
+  journal.fetch(journal.getLogSize()-1, myPrevTerm, cmd);
+
+  if(myPrevTerm > lastTerm) {
+    std::cout << "RAFT: rejecting vote from " << candidateId << " because my log is more up-to-date: term of last entry " << myPrevTerm << " vs " << lastTerm << std::endl;
+    return false;
+  }
+
+  if(journal.getLogSize()-1 > lastIndex) {
+    std::cout << "RAFT: rejecting vote from " << candidateId << " because my log is more up-to-date: index of last entry " << journal.getLogSize()-1 << " vs " << lastIndex << std::endl;
+    return false;
+  }
+
+  // remember that we've voted for this candidate
+  journal.statusUpdate(journal.getCurrentTerm(), candidateId);
+  return true;
 }
 
 std::vector<std::string> XrdRedisRaft::requestVote(RaftTerm term, RaftServerID candidateId, LogIndex lastIndex, RaftTerm lastTerm) {
@@ -553,7 +718,7 @@ std::vector<std::string> XrdRedisRaft::requestVote(RaftTerm term, RaftServerID c
   ret.emplace_back("TERM");
   ret.emplace_back(SSTR(journal.getCurrentTerm()));
 
-  bool granted = journal.requestVote(term, candidateId, lastIndex, lastTerm);
+  bool granted = decideOnVoteRequest(term, candidateId, lastIndex, lastTerm);
 
   ret.emplace_back("VOTE-GRANTED");
   if(granted) {
@@ -608,11 +773,11 @@ std::vector<std::string> XrdRedisRaft::info() {
   ret.emplace_back("LOG-SIZE");
   ret.emplace_back(SSTR(journal.getLogSize()));
 
+  ret.emplace_back("COMMIT-INDEX");
+  ret.emplace_back(SSTR(journal.getCommitIndex()));
+
   ret.emplace_back("LAST-APPLIED");
   ret.emplace_back(SSTR(journal.getLastApplied()));
-
-  ret.emplace_back("REQUESTS-IN-FLIGHT");
-  ret.emplace_back(SSTR(requestsInFlight));
 
   ret.emplace_back("LAST-CONTACT");
   ret.emplace_back(SSTR(

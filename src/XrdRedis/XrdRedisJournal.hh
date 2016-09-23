@@ -58,19 +58,20 @@ private:
   LogIndex commitIndex = 0;
 
   XrdRedisStatus retrieve(const std::string &key, int64_t &value);
-  void removeInconsistent(LogIndex start);
-
-  XrdRedisStatus setLogSize(const LogIndex newsize);
-  XrdRedisStatus setLastApplied(LogIndex index);
-
-  XrdRedisStatus rawAppend(RaftTerm term, LogIndex index, XrdRedisRequest &cmd);
 public:
+  std::mutex statusUpdateMutex;
+  XrdRedisStatus statusUpdate(RaftTerm term, RaftServerID vote);
+
+
+  XrdRedisStatus setLastApplied(LogIndex index);
+  void removeEntries(LogIndex start, LogIndex end);
+  XrdRedisStatus rawAppend(RaftTerm term, LogIndex index, XrdRedisRequest &cmd);
+  XrdRedisStatus setLogSize(const LogIndex newsize);
+
   XrdRedisJournal(XrdRedisBackend *store, RaftClusterID id);
   ~XrdRedisJournal();
 
-  RaftTerm getCurrentTerm() {
-    return currentTerm;
-  }
+  RaftTerm getCurrentTerm();
 
   RaftServerID getVotedFor() {
     return votedFor;
@@ -96,23 +97,16 @@ public:
     return clusterID;
   }
 
-  XrdRedisStatus setCurrentTerm(RaftTerm term);
-  XrdRedisStatus setVotedFor(RaftServerID server);
+  XrdRedisStatus progressTerm(RaftTerm term, RaftServerID vote);
   void setCommitIndex(LogIndex index);
 
   bool entryExists(RaftTerm term, LogIndex revision);
 
-  XrdRedisStatus append(RaftTerm prevTerm, LogIndex prevIndex, XrdRedisRequest &cmd, RaftTerm entryTerm);
-  bool requestVote(RaftTerm term, int64_t candidateId, LogIndex lastIndex, RaftTerm lastTerm);
+  std::mutex appendMutex;
+  LogIndex append(XrdRedisRequest &req);
 
   XrdRedisStatus fetchTerm(LogIndex index, RaftTerm &term);
   XrdRedisStatus fetch(LogIndex index, RaftTerm &term, XrdRedisRequest &cmd);
-
-  void applyCommits();
-
-  std::mutex pendingRepliesMutex;
-  std::map<LogIndex, std::promise<redisReplyPtr>> pendingReplies;
-  std::pair<LogIndex, std::future<redisReplyPtr>> leaderAppend(XrdRedisRequest &req);
 };
 
 #endif
