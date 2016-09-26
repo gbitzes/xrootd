@@ -136,7 +136,7 @@ void XrdRedisRaft::performElection() {
   for(size_t i = 0; i < talkers.size(); i++) {
     if(!talkers[i]) continue;
 
-    talkers[i]->sendHandshake(journal.getClusterID(), participants);
+    // talkers[i]->sendHandshake(journal.getClusterID(), participants);
     replies.push_back(talkers[i]->sendRequestVote(newTerm, myselfID, lastIndex, lastTerm)); // TODO
   }
 
@@ -267,7 +267,7 @@ void XrdRedisRaft::monitorFollower(RaftServerID machine) {
 
   while(raftState == RaftState::leader) {
     // std::cout << "nextIndex for " << machine << ": " << nextIndex << std::endl;
-    talkers[machine]->sendHandshake(journal.getClusterID(), participants);
+    // talkers[machine]->sendHandshake(journal.getClusterID(), participants);
 
     RaftTerm prevTerm;
     XrdRedisRequest tmp;
@@ -416,7 +416,7 @@ XrdRedisStatus XrdRedisRaft::configureParticipants(std::vector<RaftServer> &reps
       continue;
     }
 
-    talkers.push_back(new XrdRedisRaftTalker(participants[i]));
+    talkers.push_back(new XrdRedisRaftTalker(participants[i], journal.getClusterID(), participants));
   }
 
   quorumThreshold = (participants.size()/2) + 1;

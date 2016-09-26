@@ -29,10 +29,8 @@
 
 class XrdRedisRaftTalker {
 public:
-  XrdRedisRaftTalker(const RaftServer &srv);
-  ~XrdRedisRaftTalker();
+  XrdRedisRaftTalker(const RaftServer &srv, const RaftClusterID &id, const std::vector<RaftServer> &participants);
 
-  std::future<redisReplyPtr> sendHandshake(const RaftClusterID &id, const std::vector<RaftServer> &participants);
   std::future<redisReplyPtr> sendAppendEntries(RaftTerm term, RaftServerID leaderId, LogIndex prevIndex,
                                          RaftTerm prevTerm, LogIndex commit, XrdRedisRequest &req, RaftTerm entryTerm);
   std::future<redisReplyPtr> sendHeartbeat(RaftTerm term, RaftServerID leaderId, LogIndex prevIndex,
@@ -40,6 +38,8 @@ public:
   std::future<redisReplyPtr> sendRequestVote(RaftTerm term, int64_t candidateId, LogIndex lastIndex, RaftTerm lastTerm);
   std::future<redisReplyPtr> sendPanic();
 private:
+  void setHandshake(const RaftClusterID &id, const std::vector<RaftServer> &participants);
+
   RaftServer target;
   XrdRedisTunnel tunnel;
 };

@@ -48,6 +48,8 @@ public:
   XrdRedisStatus received_unexpected_reply(const redisReplyPtr reply);
   XrdRedisStatus received_null_reply();
 
+  void setHandshake(XrdRedisRequest &req);
+
   template <class ...Args>
   redisReplyPtr execute(const Args & ... args);
 
@@ -65,6 +67,7 @@ private:
   std::string ip;
   int port;
   int write_event_fd;
+  XrdRedisRequest handshakeCommand;
 };
 
 class XrdRedisConnectionPool {
@@ -103,6 +106,7 @@ private:
 
 class XrdRedisTunnel : public XrdRedisBackend {
 public:
+  void setHandshake(XrdRedisRequest &req);
 
   XrdRedisStatus hset(const std::string &key, const std::string &field, const std::string &value);
   XrdRedisStatus hget(const std::string &key, const std::string &field, std::string &value);
@@ -134,32 +138,33 @@ public:
   XrdRedisTunnel(const std::string &ip, const int port, size_t nconnections=10);
   ~XrdRedisTunnel();
 private:
+  XrdRedisRequest handshakeCommand;
   std::string ip;
   int port;
 
-  XrdRedisConnectionPool pool;
+  // XrdRedisConnectionPool pool;
   XrdRedisConnection my_conn;
 
   template <class ...Args>
   XrdRedisStatus executeAsync(redisCallbackFn *fn, const Args & ... args);
 
-  template <class ...Args>
-  XrdRedisStatus expect_list(std::vector<std::string> &vec, const std::string &cmd, const Args & ... args);
-
-  template <class IntegerType, class ...Args>
-  XrdRedisStatus expect_integer(IntegerType &value, const std::string &cmd, const Args & ... args);
-
-  template <class ...Args>
-  XrdRedisStatus expect_str(std::string &value, const std::string &cmd, const Args & ... args);
-
-  template <class ...Args>
-  XrdRedisStatus expect_ok(const std::string &cmd, const Args & ... args);
-
-  template <class ...Args>
-  XrdRedisStatus expect_pong(const std::string &cmd, const Args & ... args);
-
-  template <class ...Args>
-  XrdRedisStatus expect_exists(const std::string &cmd, const Args & ... args);
+  // template <class ...Args>
+  // XrdRedisStatus expect_list(std::vector<std::string> &vec, const std::string &cmd, const Args & ... args);
+  //
+  // template <class IntegerType, class ...Args>
+  // XrdRedisStatus expect_integer(IntegerType &value, const std::string &cmd, const Args & ... args);
+  //
+  // template <class ...Args>
+  // XrdRedisStatus expect_str(std::string &value, const std::string &cmd, const Args & ... args);
+  //
+  // template <class ...Args>
+  // XrdRedisStatus expect_ok(const std::string &cmd, const Args & ... args);
+  //
+  // template <class ...Args>
+  // XrdRedisStatus expect_pong(const std::string &cmd, const Args & ... args);
+  //
+  // template <class ...Args>
+  // XrdRedisStatus expect_exists(const std::string &cmd, const Args & ... args);
 };
 
 #endif

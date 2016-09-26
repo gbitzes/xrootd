@@ -21,19 +21,16 @@
 
 #include "XrdRedisRaftTalker.hh"
 
-XrdRedisRaftTalker::XrdRedisRaftTalker(const RaftServer &srv)
+XrdRedisRaftTalker::XrdRedisRaftTalker(const RaftServer &srv, const RaftClusterID &id, const std::vector<RaftServer> &participants)
 : target(srv), tunnel(srv.hostname, srv.port) {
 
+  setHandshake(id, participants);
 }
 
-XrdRedisRaftTalker::~XrdRedisRaftTalker() {
-
-}
-
-std::future<redisReplyPtr> XrdRedisRaftTalker::sendHandshake(const RaftClusterID &id, const std::vector<RaftServer> &participants) {
-  XrdRedisRequest req;
-  req.emplace_back(new std::string("RAFT_HANDSHAKE"));
-  req.emplace_back(new std::string(id));
+void XrdRedisRaftTalker::setHandshake(const RaftClusterID &id, const std::vector<RaftServer> &participants) {
+  XrdRedisRequest handshake;
+  handshake.emplace_back(new std::string("RAFT_HANDSHAKE"));
+  handshake.emplace_back(new std::string(id));
 
   std::ostringstream ss;
   for(size_t i = 0; i < participants.size(); i++) {
@@ -41,8 +38,8 @@ std::future<redisReplyPtr> XrdRedisRaftTalker::sendHandshake(const RaftClusterID
     if(i != participants.size()-1) ss << ",";
   }
 
-  req.emplace_back(new std::string(ss.str()));
-  return tunnel.executeAsync(req);
+  handshake.emplace_back(new std::string(ss.str()));
+  tunnel.setHandshake(handshake);
 }
 
 std::future<redisReplyPtr> XrdRedisRaftTalker::sendAppendEntries(RaftTerm term, RaftServerID leaderId, LogIndex prevIndex,
