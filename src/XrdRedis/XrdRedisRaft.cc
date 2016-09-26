@@ -112,6 +112,9 @@ size_t XrdRedisRaft::processVotes(std::vector<std::future<redisReplyPtr>> &repli
   size_t votes = 1;
 
   for(size_t i = 0; i < replies.size(); i++) {
+    std::future_status reply_status = replies[i].wait_for(std::chrono::milliseconds(300));
+    if(reply_status != std::future_status::ready) continue;
+
     redisReplyPtr reply = replies[i].get();
     std::pair<RaftTerm, bool> outcome = processVote(reply);
     if(outcome.first != -1) {
@@ -132,16 +135,17 @@ void XrdRedisRaft::performElection() {
   RaftTerm lastTerm;
   journal.fetchTerm(lastIndex, lastTerm);
 
+  std::cout << "before vote requests" << std::endl;
+
   std::vector<std::future<redisReplyPtr>> replies;
   for(size_t i = 0; i < talkers.size(); i++) {
     if(!talkers[i]) continue;
 
     // talkers[i]->sendHandshake(journal.getClusterID(), participants);
-    replies.push_back(talkers[i]->sendRequestVote(newTerm, myselfID, lastIndex, lastTerm)); // TODO
+    replies.push_back(talkers[i]->sendRequestVote(newTerm, myselfID, lastIndex, lastTerm));
   }
 
   size_t acks = processVotes(replies);
-
   if(raftState != RaftState::candidate) {
     // no longer a candidate, abort. We most likely received information about a newer term in the meantime
     std::cout << "RAFT: election round for " << newTerm << " interrupted after receiving " << acks << " votes. " << std::endl;
@@ -206,6 +210,8 @@ AppendEntriesReply XrdRedisRaft::pipelineAppendEntries(RaftServerID machine, Log
   RaftTerm currentTerm = journal.getCurrentTerm();
 
   std::vector<std::future<redisReplyPtr>> fut;
+  // size_t futuresProcessed = 0;
+  // AppendEntriesReply outcome;
 
   for(LogIndex index = startIndex; index < lastIndex; index++) {
     RaftTerm entryTerm;
@@ -216,13 +222,22 @@ AppendEntriesReply XrdRedisRaft::pipelineAppendEntries(RaftServerID machine, Log
 
     // check if any replies have arrived
     // while(futuresProcessed < fut.size()) {
-    //   if(!prevFailed) lastIndex = journal.getLogSize();
+    //   if(pipelineLength != 1) lastIndex = journal.getLogSize();
     //
     //   if(index != lastIndex-1 && fut[futuresProcessed].wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
     //     break;
     //   }
     //
     //   redisReplyPtr reply = fut[futuresProcessed].get();
+    //   outcome = processAppendEntriesReply(reply);
+    //   if(outcome.success) {
+    //     updateMatchIndex(machine, nextIndex+futuresProcessed);
+    //   }
+    //   else {
+    //     return outcome;
+    //   }
+    // }
+
     //   outcome = processAppendEntriesReply(reply);
     //   if(outcome.second) {
     //     // std::cout << "updating nextIndex to " << nextIndex + futuresProcessed + 1 << std::endl;

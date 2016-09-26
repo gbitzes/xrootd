@@ -166,6 +166,7 @@ void XrdRedisConnection::connect() {
   }
   write_event_fd = eventfd(0, EFD_NONBLOCK);
 
+  lock.unlock();
   if(!handshakeCommand.empty()) {
     executeAsyncFuture(handshakeCommand);
   }
@@ -182,6 +183,8 @@ void XrdRedisConnection::connect() {
 
 void XrdRedisConnection::eventLoop() {
   while(true) {
+    this->connect();
+
     struct pollfd polls[2];
     polls[0].fd = write_event_fd;
     polls[0].events = POLLIN;
@@ -206,9 +209,9 @@ void XrdRedisConnection::eventLoop() {
       }
     }
 
+    // dropped connection, wait before retrying
     std::chrono::milliseconds backoff(1000);
     std::this_thread::sleep_for(backoff);
-    this->connect();
   }
 }
 
@@ -221,8 +224,6 @@ XrdRedisConnection::XrdRedisConnection(std::string _ip, int _port)
   std::cout << "handshakeCommand before clear: " << handshakeCommand.size() << std::endl;
   handshakeCommand.clear();
   std::cout << "handshakeCommand after clear: " << handshakeCommand.size() << std::endl;
-
-  this->connect();
 
   std::thread th(&XrdRedisConnection::eventLoop, this);
   th.detach();
