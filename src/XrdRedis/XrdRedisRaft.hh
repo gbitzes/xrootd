@@ -135,9 +135,9 @@ private:
   size_t quorumThreshold;
 
   // tracks how up-to-date the log of each follower is - only used during leadership
-  std::mutex nextIndexMutex;
-  std::vector<LogIndex> nextIndex;
-  void updateNextIndex(RaftServerID machine, LogIndex index);
+  std::mutex matchIndexMutex;
+  std::vector<LogIndex> matchIndex;
+  void updateMatchIndex(RaftServerID machine, LogIndex index);
 
   std::vector<XrdRedisRaftTalker*> talkers;
 

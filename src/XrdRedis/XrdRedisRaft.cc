@@ -246,7 +246,7 @@ AppendEntriesReply XrdRedisRaft::pipelineAppendEntries(RaftServerID machine, Log
     redisReplyPtr reply = fut[i].get();
     outcome = processAppendEntriesReply(reply);
     if(outcome.success) {
-      updateNextIndex(machine, nextIndex+i+1);
+      updateMatchIndex(machine, nextIndex+i);
     }
     else {
       return outcome;
@@ -278,6 +278,10 @@ void XrdRedisRaft::monitorFollower(RaftServerID machine) {
       std::future<redisReplyPtr> fut = talkers[machine]->sendHeartbeat(journal.getCurrentTerm(), myselfID, nextIndex-1, prevTerm, journal.getCommitIndex());
       redisReplyPtr reply = fut.get();
       outcome = processAppendEntriesReply(reply);
+
+      if(outcome.online && outcome.success) {
+        updateMatchIndex(machine, outcome.logSize - 1);
+      }
     }
     else {
       outcome = pipelineAppendEntries(machine, nextIndex, prevTerm, pipelineLength);
@@ -291,18 +295,6 @@ void XrdRedisRaft::monitorFollower(RaftServerID machine) {
     else if(outcome.online && outcome.logSize > 0) {
       nextIndex = outcome.logSize;
     }
-
-    updateNextIndex(machine, nextIndex);
-
-    //   if(outcome.logSize < nextIndex) {
-    //     std::cout << "updating nextIndex to machine logSize: " << outcome.logSize << std::endl;
-    //     nextIndex = outcome.logSize;
-    //   }
-    //   else {
-    //     nextIndex--; // we have a conflict, move back
-    //   }
-    //   updateNextIndex(machine, nextIndex); // should not really be necessary...
-    // }
 
     if(!outcome.success) pipelineLength = 1;
     if(outcome.success && pipelineLength < 4096) {
@@ -341,16 +333,16 @@ void XrdRedisRaft::monitorLeader() {
   }
 }
 
-void XrdRedisRaft::updateNextIndex(RaftServerID machine, LogIndex index) {
-  std::lock_guard<std::mutex> lock(nextIndexMutex);
+void XrdRedisRaft::updateMatchIndex(RaftServerID machine, LogIndex index) {
+  std::lock_guard<std::mutex> lock(matchIndexMutex);
 
-  nextIndex[machine] = index;
+  matchIndex[machine] = index;
 
-  std::vector<LogIndex> sortedNextIndex = nextIndex;
-  std::sort(sortedNextIndex.begin(), sortedNextIndex.end());
+  std::vector<LogIndex> sortedMatchIndex = matchIndex;
+  std::sort(sortedMatchIndex.begin(), sortedMatchIndex.end());
 
   size_t threshold = participants.size() - quorumThreshold;
-  journal.setCommitIndex(sortedNextIndex[threshold] - 1);
+  journal.setCommitIndex(sortedMatchIndex[threshold]);
   this->applyCommits();
 }
 
@@ -375,10 +367,11 @@ void XrdRedisRaft::monitor() {
     // I'm leader - launch one thread for every follower so as to keep them up-to-date
     // and send heartbeats when necessary
     while(raftState == RaftState::leader) {
-      nextIndex.clear();
+      matchIndex.clear();
       for(size_t i = 0; i < participants.size(); i++) {
-        nextIndex.push_back(journal.getLogSize());
+        matchIndex.push_back(0);
       }
+      updateMatchIndex(myselfID, journal.getLogSize()-1);
 
       std::vector<std::thread> monitors;
 
@@ -509,7 +502,7 @@ std::future<redisReplyPtr> XrdRedisRaft::pushUpdate(XrdRedisRequest &req) {
   ret = resp.first->second.get_future();
   lock2.unlock();
 
-  updateNextIndex(myselfID, index+1);
+  updateMatchIndex(myselfID, index);
   logUpdated.notify_all();
 
   return std::move(ret);
