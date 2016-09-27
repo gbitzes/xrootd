@@ -194,8 +194,8 @@ int XrdRedisProtocol::ReadRequest(XrdLink *lp) {
     int rc = ReadElement(lp, str);
     if(rc <= 0) return rc;
 
-    // request.push_back(str);
-    request.emplace_back(new std::string(std::move(str)));
+    request.push_back(str);
+    // request.emplace_back(new std::string(std::move(str)));
 
     // string_ptr a = std::make_shared<std::string>(std::move(str));
     // a.assign() std::make_shared(str));
@@ -363,15 +363,15 @@ int XrdRedisProtocol::ReadInteger(XrdLink *lp, char prefix) {
 
 int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
   // to lower
-  std::transform(request[0]->begin(), request[0]->end(), request[0]->begin(), ::tolower);
+  std::transform(request[0].begin(), request[0].end(), request[0].begin(), ::tolower);
 
-  std::string command = *request[0];
+  std::string command = request[0];
   TRACEI(DEBUG, "in process request, command: '" << command << "'");
   TRACEI(DEBUG, "cmdMap size: " << redis_cmd_map.size());
   std::map<std::string, XrdRedisCommand>::iterator cmd = redis_cmd_map.find(command);
 
   if(cmd == redis_cmd_map.end()) {
-    return SendErr(SSTR("unknown command '" << *request[0] << "'"));
+    return SendErr(SSTR("unknown command '" << request[0] << "'"));
   }
 
   // this will happen if a different connection pushed an update to the raft configuration
@@ -392,7 +392,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
         if(st.ok()) return SendPong();
         return SendErr(st);
       }
-      if(request.size() == 2) return SendString(*request[1]);
+      if(request.size() == 2) return SendString(request[1]);
     }
     case XrdRedisCommand::FLUSHALL: {
       if(request.size() != 1) return SendErrArgs(command);
@@ -404,7 +404,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       if(request.size() != 2) return SendErrArgs(command);
 
       std::string value;
-      XrdRedisStatus st = backend->get(*request[1], value);
+      XrdRedisStatus st = backend->get(request[1], value);
       if(st.IsNotFound()) return SendNull();
       if(!st.ok()) return SendErr(st);
       return SendString(value);
@@ -419,7 +419,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
         // return Send(raft->pushUpdate(request).get());
       }
 
-      XrdRedisStatus st = backend->set(*request[1], *request[2]);
+      XrdRedisStatus st = backend->set(request[1], request[2]);
       if(!st.ok()) return SendErr(st);
       return SendOK();
     }
@@ -428,7 +428,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
 
       int count = 0;
       for(unsigned i = 1; i < request.size(); i++) {
-        XrdRedisStatus st = backend->exists(*request[i]);
+        XrdRedisStatus st = backend->exists(request[i]);
         if(st.ok()) count++;
         else if(!st.IsNotFound()) SendErr(st);
 
@@ -440,7 +440,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
 
       int count = 0;
       for(unsigned i = 1; i < request.size(); i++) {
-        XrdRedisStatus st = backend->del(*request[i]);
+        XrdRedisStatus st = backend->del(request[i]);
         if(st.ok()) count++;
         else if(!st.IsNotFound()) return SendErr(st);
       }
@@ -450,7 +450,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       if(request.size() != 2) return SendErrArgs(command);
 
       std::vector<std::string> ret;
-      XrdRedisStatus st = backend->keys(*request[1], ret);
+      XrdRedisStatus st = backend->keys(request[1], ret);
       if(!st.ok()) return SendErr(st);
       return SendArray(ret);
     }
@@ -458,7 +458,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       if(request.size() != 3) return SendErrArgs(command);
 
       std::string value;
-      XrdRedisStatus st = backend->hget(*request[1], *request[2], value);
+      XrdRedisStatus st = backend->hget(request[1], request[2], value);
       if(st.IsNotFound()) SendNull();
       else if(!st.ok()) return SendErr(st);
 
@@ -470,10 +470,10 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       // Mild race condition here.. if the key doesn't exist, but another thread modifies
       // it in the meantime the user gets a response of 1, not 0
 
-      XrdRedisStatus existed = backend->hexists(*request[1], *request[2]);
+      XrdRedisStatus existed = backend->hexists(request[1], request[2]);
       if(!existed.ok() && !existed.IsNotFound()) return SendErr(existed);
 
-      XrdRedisStatus st = backend->hset(*request[1], *request[2], *request[3]);
+      XrdRedisStatus st = backend->hset(request[1], request[2], request[3]);
       if(!st.ok()) return SendErr(st);
 
       if(existed.ok()) return SendNumber(0);
@@ -486,7 +486,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       if(request.size() != 2) return SendErrArgs(command);
 
       std::vector<std::string> keys;
-      XrdRedisStatus st = backend->hkeys(*request[1], keys);
+      XrdRedisStatus st = backend->hkeys(request[1], keys);
       if(!st.ok()) return SendErr(st);
 
       return SendArray(keys);
@@ -495,7 +495,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       if(request.size() != 2) return SendErrArgs(command);
 
       std::vector<std::string> arr;
-      XrdRedisStatus st = backend->hgetall(*request[1], arr);
+      XrdRedisStatus st = backend->hgetall(request[1], arr);
       if(!st.ok()) return SendErr(st);
 
       return SendArray(arr);
@@ -504,7 +504,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       if(request.size() != 4) return SendErrArgs(command);
 
       int64_t ret = 0;
-      XrdRedisStatus st = backend->hincrby(*request[1], *request[2], *request[3], ret);
+      XrdRedisStatus st = backend->hincrby(request[1], request[2], request[3], ret);
       if(!st.ok()) return SendErr(st);
       return SendNumber(ret);
     }
@@ -513,7 +513,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
 
       int count = 0;
       for(unsigned i = 2; i < request.size(); i++) {
-        XrdRedisStatus st = backend->hdel(*request[1], *request[i]);
+        XrdRedisStatus st = backend->hdel(request[1], request[i]);
         if(st.ok()) count++;
         else if(!st.IsNotFound()) return SendErr(st);
       }
@@ -522,7 +522,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
     case XrdRedisCommand::HLEN: {
       if(request.size() != 2) return SendErrArgs(command);
       size_t len;
-      XrdRedisStatus st = backend->hlen(*request[1], len);
+      XrdRedisStatus st = backend->hlen(request[1], len);
       if(!st.ok()) return SendErr(st);
 
       return SendNumber(len);
@@ -530,15 +530,15 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
     case XrdRedisCommand::HVALS: {
       if(request.size() != 2) return SendErrArgs(command);
       std::vector<std::string> vals;
-      XrdRedisStatus st = backend->hvals(*request[1], vals);
+      XrdRedisStatus st = backend->hvals(request[1], vals);
       return SendArray(vals);
     }
     case XrdRedisCommand::HSCAN: {
       if(request.size() != 3) return SendErrArgs(command);
-      if(*request[2] != "0") return SendErr("invalid cursor");
+      if(request[2] != "0") return SendErr("invalid cursor");
 
       std::vector<std::string> arr;
-      XrdRedisStatus st = backend->hgetall(*request[1], arr);
+      XrdRedisStatus st = backend->hgetall(request[1], arr);
       if(!st.ok()) return SendErr(st);
 
       return SendScanResp("0", arr);
@@ -549,7 +549,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       int64_t count = 0;
       for(unsigned i = 2; i < request.size(); i++) {
         int64_t tmp = 0;
-        XrdRedisStatus st = backend->sadd(*request[1], *request[i], tmp);
+        XrdRedisStatus st = backend->sadd(request[1], request[i], tmp);
         if(!st.ok()) return SendErr(st);
         count += tmp;
       }
@@ -558,7 +558,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
     case XrdRedisCommand::SISMEMBER: {
       if(request.size() != 3) return SendErrArgs(command);
 
-      XrdRedisStatus st = backend->sismember(*request[1], *request[2]);
+      XrdRedisStatus st = backend->sismember(request[1], request[2]);
       if(st.ok()) return SendNumber(1);
       if(st.IsNotFound()) return SendNumber(0);
       return SendErr(st);
@@ -568,7 +568,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
 
       int count = 0;
       for(unsigned i = 2; i < request.size(); i++) {
-        XrdRedisStatus st = backend->srem(*request[1], *request[i]);
+        XrdRedisStatus st = backend->srem(request[1], request[i]);
         if(st.ok()) count++;
         else if(!st.IsNotFound()) return SendErr(st);
       }
@@ -577,22 +577,22 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
     case XrdRedisCommand::SMEMBERS: {
       if(request.size() != 2) return SendErrArgs(command);
       std::vector<std::string> members;
-      XrdRedisStatus st = backend->smembers(*request[1], members);
+      XrdRedisStatus st = backend->smembers(request[1], members);
       if(!st.ok()) return SendErr(st);
       return SendArray(members);
     }
     case XrdRedisCommand::SCARD: {
       if(request.size() != 2) return SendErrArgs(command);
       size_t count;
-      XrdRedisStatus st = backend->scard(*request[1], count);
+      XrdRedisStatus st = backend->scard(request[1], count);
       if(!st.ok()) return SendErr(st);
       return SendNumber(count);
     }
     case XrdRedisCommand::SSCAN: {
       if(request.size() != 3) return SendErrArgs(command);
-      if(*request[2] != "0") return SendErr("invalid cursor");
+      if(request[2] != "0") return SendErr("invalid cursor");
       std::vector<std::string> members;
-      XrdRedisStatus st = backend->smembers(*request[1], members);
+      XrdRedisStatus st = backend->smembers(request[1], members);
       if(!st.ok()) return SendErr(st);
       return SendScanResp("0", members);
     }
@@ -601,11 +601,11 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
 
       if(request.size() != 3) return SendErrArgs(command);
 
-      if(*request[1] != raft->getClusterID()) {
+      if(request[1] != raft->getClusterID()) {
         std::cout << "cluster id mismatch" << std::endl;
         return SendErr("cluster id mismatch");
       }
-      if(*request[2] != replicas) {
+      if(request[2] != replicas) {
         std::cout << "participants mismatch" << std::endl;
         return SendErr("participants mismatch");
       }
@@ -622,22 +622,22 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       if(request.size() < 8) return SendErrArgs(command);
 
       RaftTerm term;
-      my_strtoll(*request[1], term);
+      my_strtoll(request[1], term);
 
       RaftServerID server;
-      my_strtoll(*request[2], server);
+      my_strtoll(request[2], server);
 
       LogIndex prevlog;
-      my_strtoll(*request[3], prevlog);
+      my_strtoll(request[3], prevlog);
 
       RaftTerm prevterm;
-      my_strtoll(*request[4], prevterm);
+      my_strtoll(request[4], prevterm);
 
       LogIndex leaderCommit;
-      my_strtoll(*request[5], leaderCommit);
+      my_strtoll(request[5], leaderCommit);
 
       RaftTerm entryTerm;
-      my_strtoll(*request[6], entryTerm);
+      my_strtoll(request[6], entryTerm);
 
       XrdRedisRequest req;
       for(size_t i = 7; i < request.size(); i++) {
@@ -654,16 +654,16 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       if(request.size() != 5) return SendErrArgs(command);
 
       RaftTerm term;
-      my_strtoll(*request[1], term);
+      my_strtoll(request[1], term);
 
       RaftServerID candId;
-      my_strtoll(*request[2], candId);
+      my_strtoll(request[2], candId);
 
       LogIndex lastLogIndex;
-      my_strtoll(*request[3], lastLogIndex);
+      my_strtoll(request[3], lastLogIndex);
 
       RaftTerm lastLogTerm;
-      my_strtoll(*request[4], lastLogTerm);
+      my_strtoll(request[4], lastLogTerm);
 
       return SendArray(raft->requestVote(term, candId, lastLogIndex, lastLogTerm));
     }
@@ -677,7 +677,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       // TODO: might want to drop this command after all
       if(request.size() != 3) return SendErrArgs(command);
 
-      if(*request[1] != raft->getClusterID()) return SendErr("wrong cluster id");
+      if(request[1] != raft->getClusterID()) return SendErr("wrong cluster id");
 
       // parse request[2]
 
@@ -692,7 +692,7 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       if(request.size() != 2) return SendErrArgs(command);
 
       LogIndex index;
-      my_strtoll(*request[1], index);
+      my_strtoll(request[1], index);
 
       return SendArray(raft->fetch(index));
     }

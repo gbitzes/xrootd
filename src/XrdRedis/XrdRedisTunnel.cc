@@ -343,13 +343,40 @@ void async_future_callback(redisAsyncContext *c, void *reply, void *privdata) {
   delete promise;
 }
 
+std::future<redisReplyPtr> XrdRedisConnection::executeAsyncFuture(XrdRedisRequest &req, XrdRedisRequest &req2) {
+  const char *cstr[req.size()+req2.size()];
+  size_t sizes[req.size()+req2.size()];
+
+  for(size_t i = 0; i < req.size(); i++) {
+    cstr[i] = req[i].c_str();
+    sizes[i] = req[i].size();
+  }
+
+  for(size_t i = 0; i < req2.size(); i++) {
+    cstr[i+req.size()] = req2[i].c_str();
+    sizes[i+req.size()] = req2[i].size();
+  }
+
+  std::unique_lock<std::mutex> lock(async_mutex);
+
+  if(async && !async->err) {
+    std::promise<redisReplyPtr>* prom = new std::promise<redisReplyPtr>();
+    redisAsyncCommandArgv(async, async_future_callback, prom, req.size()+req2.size(), cstr, sizes);
+    return prom->get_future();
+  }
+
+  std::promise<redisReplyPtr> prom;
+  prom.set_value(redisReplyPtr());
+  return prom.get_future();
+}
+
 std::future<redisReplyPtr> XrdRedisConnection::executeAsyncFuture(XrdRedisRequest &req) {
   const char *cstr[req.size()];
   size_t sizes[req.size()];
 
   for(size_t i = 0; i < req.size(); i++) {
-    cstr[i] = req[i]->c_str();
-    sizes[i] = req[i]->size();
+    cstr[i] = req[i].c_str();
+    sizes[i] = req[i].size();
   }
 
   std::unique_lock<std::mutex> lock(async_mutex);
@@ -491,9 +518,21 @@ XrdRedisStatus XrdRedisConnection::received_null_reply() {
 //   return conn->received_unexpected_reply(reply);
 // }
 
+// std::future<redisReplyPtr> XrdRedisTunnel::executeAsync(XrdRedisRequestSimple &req) {
+//   return my_conn.executeAsyncFuture(req);
+// }
+
+std::future<redisReplyPtr> XrdRedisTunnel::executeAsync(XrdRedisRequest &req, XrdRedisRequest &req2) {
+  return my_conn.executeAsyncFuture(req, req2);
+}
+
 std::future<redisReplyPtr> XrdRedisTunnel::executeAsync(XrdRedisRequest &req) {
   return my_conn.executeAsyncFuture(req);
 }
+
+// std::future<redisReplyPtr> XrdRedisTunnel::executeAsync(XrdRedisRequestSimple &req, XrdRedisRequest &req2) {
+//   return my_conn.executeAsyncFuture(req, req2);
+// }
 
 XrdRedisTunnel::XrdRedisTunnel(const std::string &ip_, const int port_, size_t nconnections)
 : ip(ip_), port(port_), /*pool(ip_, port_, nconnections),*/ my_conn(ip_, port_) {

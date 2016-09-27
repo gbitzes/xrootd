@@ -32,13 +32,13 @@ int XrdRedisFrontend::execute(XrdRedisRequest &request, XrdLink *lp) {
   std::lock_guard<std::mutex> lock(raftMutex);
 
   // to lower
-  std::transform(request[0]->begin(), request[0]->end(), request[0]->begin(), ::tolower);
+  std::transform(request[0].begin(), request[0].end(), request[0].begin(), ::tolower);
 
-  std::string command = *request[0];
+  std::string command = request[0];
   std::map<std::string, XrdRedisCommand>::iterator cmd = redis_cmd_map.find(command);
 
   if(cmd == redis_cmd_map.end()) {
-    return SendErr(lp, SSTR("unknown command '" << *request[0] << "'"));
+    return SendErr(lp, SSTR("unknown command '" << request[0] << "'"));
   }
 
 

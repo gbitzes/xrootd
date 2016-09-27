@@ -516,8 +516,8 @@ void XrdRedisRaft::applyCommits() {
     auto it = pendingReplies.find(journal.getLastApplied()+1);
     lock.unlock();
 
-    if(*cmd[0] == "SET" || *cmd[0] == "set") {
-      stateMachine->set(*cmd[1], *cmd[2]);
+    if(cmd[0] == "SET" || cmd[0] == "set") {
+      stateMachine->set(cmd[1], cmd[2]);
       if(it != pendingReplies.end()) {
         Send(redis_reply_ok(), it->second);
         // it->second.set_value(redis_reply_ok());
@@ -557,7 +557,7 @@ XrdRedisStatus XrdRedisRaft::append(RaftTerm prevTerm, LogIndex prevIndex, XrdRe
   }
 
   // don't add anything to the log if it's only a heartbeat
-  if(cmd.size() == 1 && strcasecmp(cmd[0]->c_str(), "HEARTBEAT") == 0) {
+  if(cmd.size() == 1 && strcasecmp(cmd[0].c_str(), "HEARTBEAT") == 0) {
     return OK();
   }
 
@@ -712,7 +712,7 @@ std::vector<std::string> XrdRedisRaft::fetch(LogIndex index) {
   ret.emplace_back(SSTR(term));
 
   for(size_t i = 0; i < req.size(); i++) {
-    ret.emplace_back(*req[i]);
+    ret.emplace_back(req[i]);
   }
 
   return ret;

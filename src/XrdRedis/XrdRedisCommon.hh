@@ -35,8 +35,10 @@ using LogIndex = int64_t;
 using RaftClusterID = std::string;
 using RaftServerID = int64_t;
 using string_ptr  = std::shared_ptr<std::string>;
-using XrdRedisRequest = std::vector<string_ptr>;
+// using XrdRedisRequest = std::vector<string_ptr>;
 
+using XrdRedisRequest = std::vector<std::string>;
+// using XrdRedisRequestSimple = std::vector<std::string>;
 
 
 struct RaftServer {

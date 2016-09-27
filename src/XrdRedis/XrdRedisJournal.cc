@@ -64,7 +64,8 @@ XrdRedisJournal::XrdRedisJournal(XrdRedisBackend *store, RaftClusterID id) : sto
 
   if(logSize == 0) {
     XrdRedisRequest req;
-    req.emplace_back(std::make_shared<std::string>("PING"));
+    req.emplace_back("PING");
+    // req.emplace_back(std::make_shared<std::string>("PING"));
     st = rawAppend(-1, 0, req);
     if(!st.ok()) throw st;
 
@@ -178,7 +179,7 @@ static bool deserializeRedisRequest(const std::string &data, RaftTerm &term, Xrd
     int64_t len = fetch_int_from_string(pos);
     pos += sizeof(len);
 
-    cmd.emplace_back(new std::string(pos, len));
+    cmd.emplace_back(pos, len); // new std::string(pos, len));
     pos += len;
   }
 
@@ -196,8 +197,8 @@ static std::string serializeRedisRequest(RaftTerm term, const XrdRedisRequest &c
   append_int_to_string(term, ss);
 
   for(size_t i = 0; i < cmd.size(); i++) {
-    append_int_to_string(cmd[i]->size(), ss);
-    ss << *cmd[i];
+    append_int_to_string(cmd[i].size(), ss);
+    ss << cmd[i];
   }
 
   return ss.str();

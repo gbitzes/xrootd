@@ -64,7 +64,8 @@ private:
 
 // using string_cptr = std::shared_ptr<std::string const>;
 using string_ptr  = std::shared_ptr<std::string>;
-using XrdRedisRequest = std::vector<string_ptr>;
+// using XrdRedisRequest = std::vector<string_ptr>;
+using XrdRedisRequest = std::vector<std::string>;
 
 // interface for a redis backend
 class XrdRedisBackend {

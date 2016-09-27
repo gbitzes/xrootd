@@ -24,6 +24,8 @@
 
 #include "XrdRedisBackend.hh"
 #include "XrdRedisQueue.hh"
+#include "XrdRedisCommon.hh"
+
 #include <hiredis/hiredis.h>
 #include <hiredis/async.h>
 #include <mutex>
@@ -57,6 +59,9 @@ public:
   int executeAsync(redisCallbackFn *fn, void *data, const Args & ... args);
 
   std::future<redisReplyPtr> executeAsyncFuture(XrdRedisRequest &req);
+  std::future<redisReplyPtr> executeAsyncFuture(XrdRedisRequest &req, XrdRedisRequest &req2);
+  // std::future<redisReplyPtr> executeAsyncFuture(XrdRedisRequestSimple &req);
+  // std::future<redisReplyPtr> executeAsyncFuture(XrdRedisRequestSimple &req, XrdRedisRequest &req2);
 
   std::mutex async_mutex;
 
@@ -134,6 +139,10 @@ public:
   XrdRedisStatus flushall();
 
   std::future<redisReplyPtr> executeAsync(XrdRedisRequest &req);
+  std::future<redisReplyPtr> executeAsync(XrdRedisRequest &req, XrdRedisRequest &req2);
+  
+  // std::future<redisReplyPtr> executeAsync(XrdRedisRequestSimple &req);
+  // std::future<redisReplyPtr> executeAsync(XrdRedisRequestSimple &req, XrdRedisRequest &req2);
 
   XrdRedisTunnel(const std::string &ip, const int port, size_t nconnections=10);
   ~XrdRedisTunnel();
