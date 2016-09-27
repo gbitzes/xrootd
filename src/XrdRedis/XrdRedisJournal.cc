@@ -115,7 +115,7 @@ bool XrdRedisJournal::entryExists(RaftTerm term, LogIndex revision) {
   if(logSize <= revision) {
     return false;
   }
-  
+
   std::string tmp;
   XrdRedisStatus st = storage->get(SSTR("REVISION_" << revision), tmp);
   if(!st.ok()) {
@@ -153,7 +153,7 @@ void XrdRedisJournal::removeEntries(LogIndex start, LogIndex end) {
 }
 
 XrdRedisStatus XrdRedisJournal::setLogSize(const LogIndex newsize) {
-  XrdRedisStatus st = storage->set("RAFT_LOG_SIZE", SSTR(newsize));
+  XrdRedisStatus st = storage->set("RAFT_LOG_SIZE", std::to_string(newsize));
   if(st.ok()) logSize = newsize;
   return st;
 }

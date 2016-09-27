@@ -54,7 +54,8 @@ if( ENABLE_REDIS )
     XrdRedis/XrdRedisRaft.cc            XrdRedis/XrdRedisRaft.hh
     XrdRedis/XrdRedisJournal.cc         XrdRedis/XrdRedisJournal.hh
     XrdRedis/XrdRedisRaftTalker.cc      XrdRedis/XrdRedisRaftTalker.hh
-    XrdRedis/XrdRedisFrontend.cc        XrdRedis/XrdRedisFrontend.hh)
+    XrdRedis/XrdRedisFrontend.cc        XrdRedis/XrdRedisFrontend.hh
+                                        XrdRedis/XrdRedisSpinlock.hh)
 
   target_link_libraries(
     ${LIB_XRD_REDIS}

@@ -24,6 +24,7 @@
 
 #include "XrdRedisJournal.hh"
 #include "XrdRedisRaftTalker.hh"
+#include "XrdRedisSpinlock.hh"
 #include <atomic>
 #include <thread>
 #include <map>
