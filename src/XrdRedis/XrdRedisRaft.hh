@@ -25,6 +25,8 @@
 #include "XrdRedisJournal.hh"
 #include "XrdRedisRaftTalker.hh"
 #include "XrdRedisSpinlock.hh"
+#include "Xrd/XrdLink.hh"
+
 #include <atomic>
 #include <thread>
 #include <map>
@@ -116,12 +118,14 @@ public:
   XrdRedisStatus configureParticipants(std::vector<RaftServer> &reps);
   void panic();
 
-  std::future<redisReplyPtr> pushUpdate(XrdRedisRequest &req);
+  // std::future<redisReplyPtr> pushUpdate(XrdRedisRequest &req, XrdLink *lp);
+  void pushUpdate(XrdRedisRequest &req, XrdLink *lp);
 
   std::string getLeader();
 private:
   std::mutex pendingRepliesMutex;
-  std::map<LogIndex, std::promise<redisReplyPtr>> pendingReplies;
+  // std::map<LogIndex, std::promise<redisReplyPtr>> pendingReplies;
+  std::map<LogIndex, XrdLink*> pendingReplies;
 
 
   // RaftTerm currentTerm;

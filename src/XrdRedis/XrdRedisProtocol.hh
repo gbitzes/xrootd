@@ -80,6 +80,8 @@ public:
 
   static XrdObjectQ<XrdRedisProtocol> ProtStack;
 private:
+  std::queue<std::future<redisReplyPtr>> pendingFutures;
+
   bool authorized_for_raft = false;
   std::chrono::steady_clock::time_point last_raft_handshake;
 
@@ -165,8 +167,6 @@ protected:
 
   static std::chrono::steady_clock::time_point last_raft_config_update;
   static std::vector<RaftServer> raftServers;
-
-  static int readWait;
 
   void Reset();
 };

@@ -21,6 +21,7 @@
 
 #include "XrdRedisRaft.hh"
 #include "XrdRedisUtil.hh"
+#include "Xrd/XrdLink.hh"
 
 #include <random>
 #include <algorithm>
@@ -247,23 +248,32 @@ void XrdRedisRaft::monitorFollower(RaftServerID machine) {
     }
 
     if(!outcome.success) pipelineLength = 1;
-    if(outcome.success && pipelineLength < 4096) {
+    if(outcome.success && pipelineLength < 30000) {
       pipelineLength *= 2;
     }
 
     updateTermIfNecessary(outcome.term, -1);
 
-    bool sleepUntilNextRound = true;
+    // bool sleepUntilNextRound = true;
 
-    if(outcome.online && nextIndex < journal.getLogSize()) {
-      sleepUntilNextRound = false;
-    }
-
-    if(sleepUntilNextRound) {
+    if(outcome.online && nextIndex >= journal.getLogSize()) {
       lock.lock();
       logUpdated.wait_for(lock, heartbeatInterval);
       lock.unlock();
     }
+    else if(!outcome.online) {
+      std::this_thread::sleep_for(heartbeatInterval);
+    }
+
+    // if(outcome.online && nextIndex < journal.getLogSize()) {
+    //   sleepUntilNextRound = false;
+    // }
+    //
+    // if(sleepUntilNextRound) {
+    //   lock.lock();
+    //   logUpdated.wait_for(lock, heartbeatInterval);
+    //   lock.unlock();
+    // }
   }
 }
 
@@ -429,28 +439,46 @@ static redisReplyPtr redis_reply_err(const std::string &err) {
   return redisReplyPtr(r, freeReplyObject);
 }
 
-std::future<redisReplyPtr> XrdRedisRaft::pushUpdate(XrdRedisRequest &req) {
-  if(raftState != RaftState::leader) {
-    std::promise<redisReplyPtr> reply;
-    reply.set_value(redis_reply_err(SSTR("MOVED 0 " << getLeader())));
-    return reply.get_future();
-  }
+// std::future<redisReplyPtr> XrdRedisRaft::pushUpdate(XrdRedisRequest &req, XrdLink *lp) {
+void XrdRedisRaft::pushUpdate(XrdRedisRequest &req, XrdLink *lp) {
+  // if(raftState != RaftState::leader) {
+  //   std::promise<redisReplyPtr> reply;
+  //   reply.set_value(redis_reply_err(SSTR("MOVED 0 " << getLeader())));
+  //   return reply.get_future();
+  // }
 
   std::lock_guard<std::mutex> lock(updating);
 
   LogIndex index = journal.append(req);
 
-  std::promise<redisReplyPtr> promise;
-  std::future<redisReplyPtr> ret = promise.get_future();
+  // std::promise<redisReplyPtr> promise;
+  // std::future<redisReplyPtr> ret = promise.get_future();
 
   std::unique_lock<std::mutex> lock2(pendingRepliesMutex);
-  pendingReplies.emplace(std::make_pair(index, std::move(promise)));
+  pendingReplies.emplace(std::make_pair(index, lp)); // std::move(promise)));
+  // std::cout << "pendingReplies size: " << pendingReplies.size() << std::endl;
   lock2.unlock();
 
   updateMatchIndex(myselfID, index);
   logUpdated.notify_all();
 
-  return std::move(ret);
+  // return std::move(ret);
+}
+
+static int Send(const redisReplyPtr &reply, XrdLink *Link) {
+  if(reply->type == REDIS_REPLY_STATUS) {
+    Link->Send("+", 1);
+    Link->Send(reply->str, reply->len);
+    return Link->Send("\r\n", 2);
+  }
+  else if(reply->type == REDIS_REPLY_ERROR) {
+    Link->Send("-", 1);
+    Link->Send(reply->str, reply->len);
+    return Link->Send("\r\n", 2);
+  }
+
+  std::cout << "unknown reply type" << std::endl;
+  std::terminate();
 }
 
 
@@ -467,7 +495,8 @@ void XrdRedisRaft::clearPendingReplies() {
   std::lock_guard<std::mutex> lock(pendingRepliesMutex);
 
   for(auto it = pendingReplies.begin(); it != pendingReplies.end(); it++) {
-    it->second.set_value(redis_reply_err("unavailable"));
+    Send(redis_reply_err("unavailable"), it->second);
+    // it->second.set_value(redis_reply_err("unavailable"));
     pendingReplies.erase(it);
   }
 }
@@ -490,7 +519,8 @@ void XrdRedisRaft::applyCommits() {
     if(*cmd[0] == "SET" || *cmd[0] == "set") {
       stateMachine->set(*cmd[1], *cmd[2]);
       if(it != pendingReplies.end()) {
-        it->second.set_value(redis_reply_ok());
+        Send(redis_reply_ok(), it->second);
+        // it->second.set_value(redis_reply_ok());
         lock.lock();
         pendingReplies.erase(it);
         lock.unlock();

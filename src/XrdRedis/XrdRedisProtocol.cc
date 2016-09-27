@@ -54,7 +54,6 @@ std::string XrdRedisProtocol::primary;
 RaftClusterID XrdRedisProtocol::clusterID;
 std::chrono::steady_clock::time_point XrdRedisProtocol::last_raft_config_update;
 std::vector<RaftServer> XrdRedisProtocol::raftServers;
-int XrdRedisProtocol::readWait = 0;
 
 /******************************************************************************/
 /*            P r o t o c o l   M a n a g e m e n t   S t a c k s             */
@@ -114,6 +113,19 @@ int XrdRedisProtocol::Process(XrdLink *lp) {
     int rc = ReadRequest(lp);
 
     if(rc == 0) {
+      while(!pendingFutures.empty()) {
+        if(!pendingFutures.front().valid()) {
+          std::cout << "WARNING: invalid future?" << std::endl;
+          pendingFutures.pop();
+          continue;
+        }
+
+        Send(pendingFutures.front().get());
+        pendingFutures.pop();
+      }
+
+      // std::cout << __FILE__ << ":" << __LINE__ << std::endl;
+
       // std::cout << "serviced " << reqs << " requests within one scheduling" << std::endl;
       prev_process = std::chrono::steady_clock::now();
       return 1;
@@ -130,6 +142,28 @@ int XrdRedisProtocol::Process(XrdLink *lp) {
     if(diff.count() > 0.01) {
       // std::cout << "Request took " << diff.count() << "s. Slow requests so far: " << slow << "\n";
       slow++;
+    }
+
+    if(!pendingFutures.empty()) {
+      // std::cout << "pending size: " << pendingFutures.size() << std::endl;
+      while(pendingFutures.size() >= 30) {
+        Send(pendingFutures.front().get());
+        pendingFutures.pop();
+      }
+
+      // while(pendingFutures.size() >= 30 || pendingFutures.front().wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+      //   if(!pendingFutures.front().valid()) {
+      //     std::cout << "WARNING: invalid future?" << std::endl;
+      //     pendingFutures.pop();
+      //     continue;
+      //   }
+      //
+      //   std::cout << "is valid: " << pendingFutures.front().valid() << std::endl;
+      //   std::future<redisReplyPtr> fut = pendingFutures.front();
+      //   Send(fut);
+      //   pendingFutures.pop();
+      // }
+      // std::cout << __FILE__ << ":" << __LINE__ << std::endl;
     }
 
     reqs++;
@@ -379,7 +413,10 @@ int XrdRedisProtocol::ProcessRequest(XrdLink *lp) {
       if(request.size() != 3) return SendErrArgs(command);
 
       if(raft) {
-        return Send(raft->pushUpdate(request).get());
+        raft->pushUpdate(request, lp);
+        // pendingFutures.push(raft->pushUpdate(request));
+        return 1;
+        // return Send(raft->pushUpdate(request).get());
       }
 
       XrdRedisStatus st = backend->set(*request[1], *request[2]);
@@ -906,10 +943,6 @@ int XrdRedisProtocol::Configure(char *parms, XrdProtocol_Config * pi) {
   XrdRedisTrace->What = TRACE_ALL;
 
   eDest.Emsg("Config", "redis: configuring");
-
-  // readWait = 30000;
-  readWait = 100;
-
   eDest.Emsg("Config", "in Configure");
 
   char* rdf;
